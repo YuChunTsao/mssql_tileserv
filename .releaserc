@@ -1,0 +1,25 @@
+{
+  "repositoryUrl": "git@github.com:YuChunTsao/mssql_tileserv.git",
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    "@semantic-release/changelog",
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md"],
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "publish/linux/mssql_tileserv-*.tar.gz", "name": "mssql_tileserv-v${nextRelease.version}-linux-x64.tar.gz", "label": "mssql_tileserv v${nextRelease.version} for Linux (x64)" },
+          { "path": "publish/win/mssql_tileserv-*.zip", "name": "mssql_tileserv-v${nextRelease.version}-win-x64.zip", "label": "mssql_tileserv v${nextRelease.version} for Windows (x64)" },
+          { "path": "publish/osx/mssql_tileserv-*.tar.gz", "name": "mssql_tileserv-v${nextRelease.version}-osx-x64.tar.gz", "label": "mssql_tileserv v${nextRelease.version} for macOS (x64)" }
+        ]
+      }
+    ]
+  ],
+}

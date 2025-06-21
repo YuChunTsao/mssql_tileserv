@@ -1,0 +1,53 @@
+name: Release
+on:
+  push:
+    branches:
+      - main
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        node-version: [20]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Create package.json
+        run: echo '{}' > package.json
+
+      - name: Install semantic-release and plugins
+        run: npm install semantic-release @semantic-release/exec @semantic-release/changelog @semantic-release/git @semantic-release/github -D
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build Linux executable
+        run: |
+          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o ./publish/linux
+          cd ./publish/linux
+          tar -czvf mssql_tileserv-v${{ github.ref_name }}-linux-x64.tar.gz *
+
+      - name: Build macOS executable
+        run: |
+          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r osx-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o ./publish/osx
+          cd ./publish/osx
+          tar -czvf mssql_tileserv-v${{ github.ref_name }}-osx-x64.tar.gz *
+
+      - name: Build Windows executable
+        run: |
+          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o ./publish/win
+          cd ./publish/win
+          zip -r mssql_tileserv-v${{ github.ref_name }}-win-x64.zip .
+
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+        run: npx semantic-release
