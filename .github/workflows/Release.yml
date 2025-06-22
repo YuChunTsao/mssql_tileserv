@@ -31,19 +31,19 @@ jobs:
 
       - name: Build Linux executable
         run: |
-          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o ./publish/linux
+          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -p:Version=${{ github.ref_name }} -o ./publish/linux
           cd ./publish/linux
           tar -czvf mssql_tileserv-v${{ github.ref_name }}-linux-x64.tar.gz *
 
       - name: Build macOS executable
         run: |
-          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r osx-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o ./publish/osx
+          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r osx-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -p:Version=${{ github.ref_name }} -o ./publish/osx
           cd ./publish/osx
           tar -czvf mssql_tileserv-v${{ github.ref_name }}-osx-x64.tar.gz *
 
       - name: Build Windows executable
         run: |
-          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -o ./publish/win
+          dotnet publish ./MssqlTileServ.Cli/MssqlTileServ.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -p:Version=${{ github.ref_name }} -o ./publish/win
           cd ./publish/win
           zip -r mssql_tileserv-v${{ github.ref_name }}-win-x64.zip .
 
