@@ -10,11 +10,11 @@ public class TomlConfigLoaderTests
         // Arrange
         var filePath = "test.toml";
         var tomlContent = @"
-            [database]
-            server = 'localhost'
-            port = 1433
-            user = 'sa'
-            password = 'password'
+            [Database]
+            Server = 'localhost'
+            Port = 1433
+            User = 'sa'
+            Password = 'password'
         ";
         File.WriteAllText(filePath, tomlContent);
 
