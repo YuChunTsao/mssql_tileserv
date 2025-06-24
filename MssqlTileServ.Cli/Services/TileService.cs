@@ -1,7 +1,11 @@
 using System.Data;
 using Microsoft.SqlServer.Types;
 using MssqlTileServ.Cli.Models;
+using NetTopologySuite.Features;
 using NetTopologySuite.Geometries;
+using NetTopologySuite.IO;
+using NetTopologySuite.IO.VectorTiles;
+using NetTopologySuite.Precision;
 
 namespace MssqlTileServ.Cli.Services;
 
@@ -48,8 +52,10 @@ public class TileService
           ";
     }
 
-    public Task<TileData> GetTile(Config config, Envelope bounds, string layername)
+    private Task<TileData> GetTileData(Config config, Envelope bounds, string layername)
     {
+        // TODO: call TileIdToBounds? don't pass bounds as a parameter
+        // pass z/x/y as parameters instead
         if (config.Database == null)
         {
             throw new ArgumentException("Database configuration is not provided.");
@@ -117,5 +123,85 @@ public class TileService
         _connection.Close();
 
         return Task.FromResult(tileData);
+    }
+
+    // TODO: pass config as a parameter
+    private Layer CreateVectorTileLayer(string layername, TileData tileData, Envelope bounds)
+    {
+        // TODO:
+        // Now, we suppose that the projection is WGS84 (EPSG:4326)
+        // I'll Implement a method to handle different projections later
+
+        List<IFeature> features = TileDataToFeatures(tileData);
+
+        // Clip the features with the buffered bounds
+        PrecisionModel precisionModel = new PrecisionModel(1e6);
+        GeometryFactory geometryFactory = new GeometryFactory(precisionModel);
+        GeometryPrecisionReducer reducer = new GeometryPrecisionReducer(precisionModel);
+        Geometry bufferedBounds = geometryFactory.ToGeometry(bounds);
+        var reducedTile = reducer.Reduce(bufferedBounds);
+
+        // Iterate through the features and reduce their geometries
+        for (int i = 0; i < features.Count; i++)
+        {
+            // If the geometry is point or multipoint, we can skip the reduction
+            if (features[i].Geometry is Point || features[i].Geometry is MultiPoint)
+            {
+                continue;
+            }
+
+            var reducedGeometry = reducer.Reduce(features[i].Geometry);
+
+            // Clip the feature geometry to the tile bounds
+            Geometry clippedGeometry = reducedGeometry.Intersection(reducedTile);
+            if (clippedGeometry.IsEmpty)
+            {
+                features.RemoveAt(i);
+                i--; // Adjust index after removal
+                continue;
+            }
+            else
+            {
+                // Update the feature with the clipped geometry
+                features[i] = new Feature(clippedGeometry, features[i].Attributes);
+            }
+        }
+
+        // TODO: Simplify the geometries if needed
+
+        Layer layer = new Layer()
+        {
+            Name = layername,
+        };
+
+        foreach (var feature in features)
+        {
+            layer.Features.Add(feature);
+        }
+
+        return layer;
+    }
+
+    private List<IFeature> TileDataToFeatures(TileData tileData)
+    {
+        List<IFeature> features = new List<IFeature>();
+
+        WKBReader wkbReader = new WKBReader();
+
+        for (int i = 0; i < tileData.Geometries.Count; i++)
+        {
+            Geometry geometry = wkbReader.Read(tileData.Geometries[i]);
+            Dictionary<string, object?> attributesDict = tileData.Attributes[i];
+
+            AttributesTable attributesTable = new AttributesTable();
+            foreach (var kvp in attributesDict)
+            {
+                attributesTable.Add(kvp.Key, kvp.Value);
+            }
+
+            features.Add(new Feature(geometry, attributesTable));
+        }
+
+        return features;
     }
 }
