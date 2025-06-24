@@ -7,6 +7,8 @@ using MssqlTileServ.Cli.Utils;
 using MssqlTileServ.Cli.Models;
 using System.Data;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.FileProviders;
+using System.Reflection;
 
 namespace MssqlTileServ.Cli
 {
@@ -59,38 +61,71 @@ namespace MssqlTileServ.Cli
                     });
                 }
 
-                builder.Services.AddScoped<IDbConnection>(_ =>
-                    new SqlConnection(connectionString));
-                builder.Services.AddScoped<TileService>();
+                builder.Services.AddTransient<TileService>(sp =>
+                {
+                    return new TileService(connectionString);
+                });
 
                 var app = builder.Build();
 
                 // Use CORS middleware
                 app.UseCors();
 
+                // Check all available layers
+                Console.WriteLine("Checking available layers...");
+                List<LayerMeta> layers = TileService.GetAvailableTables(connectionString);
+                Console.WriteLine("Finished checking layers.");
+
+                var embeddedProvider = new EmbeddedFileProvider(Assembly.GetExecutingAssembly(), "MssqlTileServ.Cli.wwwroot");
+
                 app.MapGet("/", () =>
                 {
                     return "Welcome to the mssql_tileserv API!";
                 });
 
+                app.MapGet("/layers", () =>
+                {
+                    return Results.Json(layers);
+                });
+
+                app.MapGet("/monitor", async context =>
+                {
+                    var fileInfo = embeddedProvider.GetFileInfo("monitor.html");
+                    if (!fileInfo.Exists)
+                    {
+                        context.Response.StatusCode = 404;
+                        await context.Response.WriteAsync("Monitor page not found.");
+                        return;
+                    }
+                    context.Response.ContentType = "text/html";
+                    using var stream = fileInfo.CreateReadStream();
+                    await stream.CopyToAsync(context.Response.Body);
+                });
+
                 var tileCache = new TileCache();
-                app.MapGet("{layer}/{z:int}/{x:int}/{y:int}", (HttpContext context, string layer, int z, int x, int y) =>
+                app.MapGet("{layer}/{z:int}/{x:int}/{y:int}", (HttpContext context, string layer, int z, int x, int y, TileService tileService) =>
                 {
                     string cacheKey = $"{layer}-{z}/{x}/{y}";
 
+                    LayerMeta? layerMeta = layers.FirstOrDefault(l => l.Name.Equals(layer));
+                    if (layerMeta == null)
+                    {
+                        context.Response.StatusCode = 404;
+                        return Results.NotFound($"Layer '{layer}' not found.");
+                    }
+
                     byte[] tile;
-                    if (config.Service.MemoryExpirationSeconds > 0)
+                    bool memoryCacheEnabled = config.Service.MemoryExpirationSeconds > 0;
+                    if (memoryCacheEnabled)
                     {
                         tile = tileCache.GetOrAdd(cacheKey, () =>
                         {
-                            TileService tileService = new TileService(context.RequestServices.GetRequiredService<IDbConnection>());
-                            return tileService.GetVectorTileBytes(config, layer, z, x, y);
+                            return tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
                         }, TimeSpan.FromSeconds(config.Service.MemoryExpirationSeconds));
                     }
                     else
                     {
-                        TileService tileService = new TileService(context.RequestServices.GetRequiredService<IDbConnection>());
-                        tile = tileService.GetVectorTileBytes(config, layer, z, x, y);
+                        tile = tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
                     }
 
                     if (config.Service.CacheTTL > 0)

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Geometry Table Viewer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 2em;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+
+    th,
+    td {
+      border: 1px solid #ccc;
+      padding: 8px;
+      text-align: left;
+    }
+
+    th {
+      background: #f4f4f4;
+    }
+
+    tr:nth-child(even) {
+      background: #fafafa;
+    }
+
+    .srid-list {
+      font-size: 0.95em;
+      color: #555;
+    }
+
+    .error {
+      color: red;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Geometry Table Viewer</h1>
+  <div id="error" class="error"></div>
+  <table id="geometry-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Object Type</th>
+        <th>Geometry Column</th>
+        <th>Geometry Type</th>
+        <th>SRID(s)</th>
+        <th>Spatial Index</th>
+        <th>Health</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- Data will be inserted here -->
+    </tbody>
+  </table>
+  <script>
+    async function fetchData() {
+      try {
+        const response = await fetch('/layers');
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+        renderTable(data);
+      } catch (err) {
+        document.getElementById('error').textContent = 'Failed to load data: ' + err.message;
+      }
+    }
+
+    function getHealth(row) {
+      if (!Array.isArray(row.srid) || row.srid.length !== 1 || !row.srid[0]) {
+        return '⚠️ Warning';
+      }
+
+      // if the table without spatial index, return warning
+      if (!row.hasSpatialIndex) {
+        return '⚠️ Warning';
+      }
+
+      return '✅ Good';
+    }
+
+    function hasSpatialIndex(hasSpatialIndex) {
+      return hasSpatialIndex ? '✅ Yes' : '❌ No';
+    }
+
+    function getSRID(srid) {
+      // if the count of srid is 1, return the first one 
+      // if the count of srid is more than 1, return the list
+      // if the count of srid is 0, return a question emoji
+      if (!Array.isArray(srid) || srid.length === 0) {
+        return '❓ Unknown';
+      }
+      if (srid.length === 1) {
+        return srid[0];
+      }
+      return srid.join(', ');
+    }
+
+    function renderTable(data) {
+      const tbody = document.querySelector('#geometry-table tbody');
+      tbody.innerHTML = '';
+      data.forEach(row => {
+        const tr = document.createElement('tr');
+        var objectType = "Table"
+        if (row.objectType.trim() === 'V') {
+          objectType = "View";
+        }
+        tr.innerHTML = `
+          <td>${row.name}</td>
+          <td>${objectType}</td>
+          <td>${row.geometryColumnName}</td>
+          <td>${row.geometryTypeName}</td>
+          <td class="srid-list">${getSRID(row.srid)}</td>
+          <td>${hasSpatialIndex(row.hasSpatialIndex)}</td>
+          <td>${getHealth(row)}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    fetchData();
+  </script>
+</body>
+
+</html>

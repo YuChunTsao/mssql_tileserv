@@ -32,4 +32,8 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="wwwroot/**" />
+  </ItemGroup>
+
 </Project>

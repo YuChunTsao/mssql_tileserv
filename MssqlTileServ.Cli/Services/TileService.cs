@@ -1,4 +1,4 @@
-using System.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Types;
 using MssqlTileServ.Cli.Models;
 using NetTopologySuite.Features;
@@ -12,21 +12,22 @@ namespace MssqlTileServ.Cli.Services;
 
 public class TileService
 {
-    private readonly IDbConnection _connection;
+    private readonly string _connectionString;
 
-    public TileService(IDbConnection connection)
+    public TileService(string connectionString)
     {
-        _connection = connection;
+        _connectionString = connectionString;
     }
 
-    private string PrepareSqlQuery(Config config, Envelope bounds, string layername)
+    private string PrepareSqlQuery(Config config, Envelope bounds, LayerMeta layerMeta)
     {
-        // TODO: We have to know the column name of the geometry column
-        // For now, we assume the geometry column is named 'geometry'
+        string layername = layerMeta.Name;
+        string geometryColumnName = layerMeta.GeometryColumnName;
+        int SRID = layerMeta.SRID[0];
         return $@"
             SELECT *
             FROM {config.Database.Name}.{config.Database.Schema}.{layername}
-            WHERE geometry.STIntersects(
+            WHERE {geometryColumnName}.STIntersects(
                 geometry::STGeomFromText(
                     'POLYGON((
                         {bounds.MinX} {bounds.MaxY},
@@ -34,66 +35,64 @@ public class TileService
                         {bounds.MaxX} {bounds.MinY},
                         {bounds.MinX} {bounds.MinY},
                         {bounds.MinX} {bounds.MaxY}
-                    ))', 4326
+                    ))', {SRID}
                 )
             ) = 1
           ";
     }
 
-    private Task<TileData> GetTileData(Config config, Envelope bounds, string layername)
+    private Task<TileData> GetTileData(Config config, string sqlQuery)
     {
-        // TODO: call TileIdToBounds? don't pass bounds as a parameter
-        // pass z/x/y as parameters instead
-        string sqlQuery = PrepareSqlQuery(config, bounds, layername);
-
         TileData tileData = new TileData();
 
-        _connection.Open();
-        using (var command = _connection.CreateCommand())
+        using (var connection = new SqlConnection(_connectionString))
         {
-            command.CommandText = sqlQuery;
-            command.CommandTimeout = config.Database?.DbTimeout ?? 10;
-
-            using (var reader = command.ExecuteReader())
+            connection.Open();
+            using (var command = connection.CreateCommand())
             {
-                while (reader.Read())
+                command.CommandText = sqlQuery;
+                command.CommandTimeout = config.Database?.DbTimeout ?? 10;
+
+                using (var reader = command.ExecuteReader())
                 {
-                    var attributes = new Dictionary<string, object?>();
-                    byte[]? geometry = null;
-
-                    for (int i = 0; i < reader.FieldCount; i++)
+                    while (reader.Read())
                     {
-                        // Check if the column is of type SqlGeometry or SqlGeography
-                        if (reader.GetFieldType(i) == typeof(SqlGeometry) || reader.GetFieldType(i) == typeof(SqlGeography))
+                        var attributes = new Dictionary<string, object?>();
+                        byte[]? geometry = null;
+
+                        for (int i = 0; i < reader.FieldCount; i++)
                         {
-                            if (reader[i] is SqlGeometry sqlGeom)
+                            // Check if the column is of type SqlGeometry or SqlGeography
+                            if (reader.GetFieldType(i) == typeof(SqlGeometry) || reader.GetFieldType(i) == typeof(SqlGeography))
                             {
-                                // Convert SqlGeometry to WKB
-                                geometry = sqlGeom.STAsBinary().Value;
+                                if (reader[i] is SqlGeometry sqlGeom)
+                                {
+                                    // Convert SqlGeometry to WKB
+                                    geometry = sqlGeom.STAsBinary().Value;
+                                }
+                                else if (reader[i] is SqlGeography sqlGeog)
+                                {
+                                    // Convert SqlGeography to WKB
+                                    geometry = sqlGeog.STAsBinary().Value;
+                                }
                             }
-                            else if (reader[i] is SqlGeography sqlGeog)
+                            else
                             {
-                                // Convert SqlGeography to WKB
-                                geometry = sqlGeog.STAsBinary().Value;
+                                var columnName = reader.GetName(i);
+                                attributes[columnName] = reader.IsDBNull(i) ? null : reader.GetValue(i);
                             }
                         }
-                        else
+
+                        if (geometry != null)
                         {
-                            var columnName = reader.GetName(i);
-                            attributes[columnName] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                            tileData.Geometries.Add(geometry);
+                            tileData.Attributes.Add(attributes);
                         }
                     }
 
-                    if (geometry != null)
-                    {
-                        tileData.Geometries.Add(geometry);
-                        tileData.Attributes.Add(attributes);
-                    }
                 }
-
             }
         }
-        _connection.Close();
 
         return Task.FromResult(tileData);
     }
@@ -121,7 +120,6 @@ public class TileService
         return features;
     }
 
-    // TODO: pass config as a parameter
     private Layer CreateVectorTileLayer(string layername, TileData tileData, Envelope bounds)
     {
         // TODO:
@@ -190,7 +188,7 @@ public class TileService
         }
     }
 
-    public VectorTile GetVectorTile(Config config, string layername, int z, int x, int y)
+    public VectorTile GetVectorTile(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
         Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
@@ -198,16 +196,18 @@ public class TileService
         var tileDefinition = new NetTopologySuite.IO.VectorTiles.Tiles.Tile(x, y, z);
         VectorTile vectorTile = new VectorTile { TileId = tileDefinition.Id };
 
-        TileData tileData = GetTileData(config, bounds, layername).GetAwaiter().GetResult();
+        string layername = layerMeta.Name;
+        string sqlQuery = PrepareSqlQuery(config, bounds, layerMeta);
+        TileData tileData = GetTileData(config, sqlQuery).GetAwaiter().GetResult();
         Layer layer = CreateVectorTileLayer(layername, tileData, bufferedBounds);
         vectorTile.Layers.Add(layer);
 
         return vectorTile;
     }
 
-    public byte[] GetVectorTileBytes(Config config, string layername, int z, int x, int y)
+    public byte[] GetVectorTileBytes(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
-        VectorTile vt = GetVectorTile(config, layername, z, x, y);
+        VectorTile vt = GetVectorTile(config, layerMeta, z, x, y);
         byte[] tile;
         using (var ms = new MemoryStream())
         {
@@ -218,5 +218,141 @@ public class TileService
         tile = CompressMVT(tile);
 
         return tile;
+    }
+
+    public static List<LayerMeta> GetAvailableTables(string connectionString)
+    {
+        List<LayerMeta> layers = new List<LayerMeta>();
+
+        string sql_find_table_info = """
+        SELECT
+            o.name AS ObjectName,
+            o.type AS ObjectType,
+            c.name AS ColumnName,
+            ty.name AS TypeName
+        FROM
+            sys.columns c
+        JOIN
+            sys.objects o ON c.object_id = o.object_id
+        JOIN
+            sys.types ty ON c.user_type_id = ty.user_type_id
+        WHERE
+            o.type IN ('U', 'V') -- U: Table, V: View
+            AND ty.name IN ('geometry', 'geography');
+        """;
+
+        // SQL Server allows users to store geometries with different SRIDs in the same geometry column.
+        string sql_find_srid = """
+          SELECT
+            {geometryColumnName}.STSrid AS SRID
+          FROM
+            {tableName}
+          WHERE
+            {geometryColumnName} IS NOT NULL
+        """;
+
+        string sql_find_spatial_index = """
+        SELECT
+            t.name AS table_name
+        FROM
+            sys.tables t
+        JOIN
+            sys.schemas s ON t.schema_id = s.schema_id
+        JOIN
+            sys.indexes i ON i.object_id = t.object_id AND i.type_desc = 'SPATIAL'
+        """;
+
+        using (var connection = new SqlConnection(connectionString))
+        {
+            connection.Open();
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = sql_find_table_info;
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var objectName = reader.GetString(reader.GetOrdinal("ObjectName"));
+                        var objectType = reader.GetString(reader.GetOrdinal("ObjectType"));
+                        var columnName = reader.GetString(reader.GetOrdinal("ColumnName"));
+                        var typeName = reader.GetString(reader.GetOrdinal("TypeName"));
+
+                        // TODO: Only get the first geometry column (?)
+
+                        // Check if the layer already exists
+                        var existingLayer = layers.FirstOrDefault(l => l.Name == objectName);
+                        if (existingLayer == null)
+                        {
+                            // Create a new layer meta
+                            layers.Add(new LayerMeta
+                            {
+                                Name = objectName,
+                                ObjectType = objectType,
+                                GeometryColumnName = columnName,
+                                GeometryTypeName = typeName
+                            });
+                        }
+                        else
+                        {
+                            // Update the existing layer with the geometry column and type
+                            existingLayer.GeometryColumnName = columnName;
+                            existingLayer.GeometryTypeName = typeName;
+                        }
+                    }
+                }
+            }
+        }
+
+        using (var connection = new SqlConnection(connectionString))
+        {
+            connection.Open();
+            using (var command = connection.CreateCommand())
+            {
+                // Query the SRID for each layer
+                command.CommandText = sql_find_srid;
+                foreach (var layer in layers)
+                {
+                    command.CommandText = sql_find_srid
+                        .Replace("{geometryColumnName}", layer.GeometryColumnName)
+                        .Replace("{tableName}", layer.Name);
+                    using (var sridReader = command.ExecuteReader())
+                    {
+                        List<int> srids = new List<int>();
+                        while (sridReader.Read())
+                        {
+                            if (!sridReader.IsDBNull(0))
+                            {
+                                srids.Add(sridReader.GetInt32(0));
+                            }
+                        }
+                        layer.SRID = srids.Distinct().ToArray(); // Store distinct SRIDs
+                    }
+                }
+            }
+        }
+
+        using (var connection = new SqlConnection(connectionString))
+        {
+            connection.Open();
+            using (var command = connection.CreateCommand())
+            {
+                // Query the spatial index for each layer
+                command.CommandText = sql_find_spatial_index;
+                using (var spatialIndexReader = command.ExecuteReader())
+                {
+                    while (spatialIndexReader.Read())
+                    {
+                        var tableName = spatialIndexReader.GetString(spatialIndexReader.GetOrdinal("table_name"));
+                        var layer = layers.FirstOrDefault(l => l.Name == tableName);
+                        if (layer != null)
+                        {
+                            layer.HasSpatialIndex = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return layers;
     }
 }
