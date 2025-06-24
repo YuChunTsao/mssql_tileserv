@@ -21,24 +21,8 @@ public class TileService
 
     private string PrepareSqlQuery(Config config, Envelope bounds, string layername)
     {
-        if (config.Database == null)
-        {
-            throw new ArgumentException("Database configuration is not provided.");
-        }
-
-        if (config.Database?.Name == null)
-        {
-            throw new ArgumentException("Database name is not configured.");
-        }
-
-        if (config.Database?.User == null || config.Database?.Password == null)
-        {
-            throw new ArgumentException("Database user or password is not configured.");
-        }
-
         // TODO: We have to know the column name of the geometry column
         // For now, we assume the geometry column is named 'geometry'
-
         return $@"
             SELECT *
             FROM {config.Database.Name}.{config.Database.Schema}.{layername}
@@ -60,21 +44,6 @@ public class TileService
     {
         // TODO: call TileIdToBounds? don't pass bounds as a parameter
         // pass z/x/y as parameters instead
-        if (config.Database == null)
-        {
-            throw new ArgumentException("Database configuration is not provided.");
-        }
-
-        if (string.IsNullOrEmpty(config.Database.Name))
-        {
-            throw new ArgumentException("Database name is not configured.");
-        }
-
-        if (string.IsNullOrEmpty(config.Database.User) || string.IsNullOrEmpty(config.Database.Password))
-        {
-            throw new ArgumentException("Database user or password is not configured.");
-        }
-
         string sqlQuery = PrepareSqlQuery(config, bounds, layername);
 
         TileData tileData = new TileData();
@@ -224,7 +193,7 @@ public class TileService
     public VectorTile GetVectorTile(Config config, string layername, int z, int x, int y)
     {
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
-        Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile?.Extent ?? 4096, config.Tile?.Buffer ?? 256);
+        Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
 
         var tileDefinition = new NetTopologySuite.IO.VectorTiles.Tiles.Tile(x, y, z);
         VectorTile vectorTile = new VectorTile { TileId = tileDefinition.Id };

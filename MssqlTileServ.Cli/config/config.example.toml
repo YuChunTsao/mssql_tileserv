@@ -7,14 +7,16 @@ Port = 1433               # Database port
 User = "sa"               # Username
 Password = "YourPassword" # Password
 Name = "master"           # Database name
-DbPoolMaxConns = 4        # Maximum number of connections in the pool
+Schema = "dbo"            # Database schema
 DbTimeout = 10            # Timeout for database operations in seconds
+DbPoolMaxConns = 4        # Maximum number of connections in the pool
 
 [Service]
 HttpPort = 5000
 HttpsPort = 5001
-CacheTTL = 0        # Cache time-to-live in seconds (0 = no caching)
-CORSOrigins = ["*"] # CORS allowed origins (use "*" for all)
+CORSOrigins = ["*"]         # CORS allowed origins (use "*" for all)
+CacheTTL = 0                # Cache time-to-live in seconds (0 = no caching)
+MemoryExpirationSeconds = 0 # Cache expiration time in seconds (0 = no caching) 
 
 [Tile]
 # Resolution to quantize vector tiles to

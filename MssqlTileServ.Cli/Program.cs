@@ -7,7 +7,6 @@ using MssqlTileServ.Cli.Utils;
 using MssqlTileServ.Cli.Models;
 using System.Data;
 using Microsoft.Data.SqlClient;
-using NetTopologySuite.Geometries;
 
 namespace MssqlTileServ.Cli
 {
@@ -23,24 +22,43 @@ namespace MssqlTileServ.Cli
             {
                 Config config = TomlConfigLoader.Load(configFilePath);
                 string connectionString =
-                    $"Server={config.Database?.Server},{config.Database?.Port};" +
-                    $"Database={config.Database?.Name};" +
-                    $"User Id={config.Database?.User};" +
-                    $"Password={config.Database?.Password};" +
+                    $"Server={config.Database.Server},{config.Database.Port};" +
+                    $"Database={config.Database.Name};" +
+                    $"User Id={config.Database.User};" +
+                    $"Password={config.Database.Password};" +
                     $"TrustServerCertificate=True;" +
                     $"Pooling=true;" +
                     $"Max Pool Size={config.Database?.DbPoolMaxConns}";
 
                 var builder = WebApplication.CreateBuilder();
-                builder.Services.AddCors(options =>
+
+                // Control the Cors policy based on the config
+                if (config.Service.CORSOrigins.Length > 0 && config.Service.CORSOrigins[0] != "*")
                 {
-                    options.AddDefaultPolicy(policy =>
+                    builder.Services.AddCors(options =>
                     {
-                        policy.AllowAnyOrigin()
-                              .AllowAnyHeader()
-                              .AllowAnyMethod();
+                        options.AddDefaultPolicy(policy =>
+                        {
+                            policy.WithOrigins(config.Service.CORSOrigins)
+                                  .AllowAnyHeader()
+                                  .AllowAnyMethod();
+                        });
                     });
-                });
+                }
+                else
+                {
+                    // Allow any origin if no specific origins are configured
+                    builder.Services.AddCors(options =>
+                    {
+                        options.AddDefaultPolicy(policy =>
+                        {
+                            policy.AllowAnyOrigin()
+                                  .AllowAnyHeader()
+                                  .AllowAnyMethod();
+                        });
+                    });
+                }
+
                 builder.Services.AddScoped<IDbConnection>(_ =>
                     new SqlConnection(connectionString));
                 builder.Services.AddScoped<TileService>();
@@ -55,13 +73,32 @@ namespace MssqlTileServ.Cli
                     return "Welcome to the mssql_tileserv API!";
                 });
 
+                var tileCache = new TileCache();
                 app.MapGet("{layer}/{z:int}/{x:int}/{y:int}", (HttpContext context, string layer, int z, int x, int y) =>
                 {
-                    TileService tileService = new TileService(context.RequestServices.GetRequiredService<IDbConnection>());
-                    byte[] tile = tileService.GetVectorTileBytes(config, layer, z, x, y);
+                    string cacheKey = $"{layer}-{z}/{x}/{y}";
 
-                    context.Response.Headers["Cache-Control"] = $"public, max-age={config.Service?.CacheTTL ?? 0}";
+                    byte[] tile;
+                    if (config.Service.MemoryExpirationSeconds > 0)
+                    {
+                        tile = tileCache.GetOrAdd(cacheKey, () =>
+                        {
+                            TileService tileService = new TileService(context.RequestServices.GetRequiredService<IDbConnection>());
+                            return tileService.GetVectorTileBytes(config, layer, z, x, y);
+                        }, TimeSpan.FromSeconds(config.Service.MemoryExpirationSeconds));
+                    }
+                    else
+                    {
+                        TileService tileService = new TileService(context.RequestServices.GetRequiredService<IDbConnection>());
+                        tile = tileService.GetVectorTileBytes(config, layer, z, x, y);
+                    }
+
+                    if (config.Service.CacheTTL > 0)
+                    {
+                        context.Response.Headers["Cache-Control"] = $"public, max-age={config.Service.CacheTTL}";
+                    }
                     context.Response.Headers["Content-Encoding"] = "gzip";
+
                     return Results.File(tile, "application/x-protobuf", $"tile_{z}_{x}_{y}.mvt");
                 });
 
