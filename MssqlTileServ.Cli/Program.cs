@@ -7,6 +7,7 @@ using MssqlTileServ.Cli.Utils;
 using MssqlTileServ.Cli.Models;
 using System.Data;
 using Microsoft.Data.SqlClient;
+using NetTopologySuite.Geometries;
 
 namespace MssqlTileServ.Cli
 {
@@ -56,8 +57,12 @@ namespace MssqlTileServ.Cli
 
                 app.MapGet("{layer}/{z:int}/{x:int}/{y:int}", (HttpContext context, string layer, int z, int x, int y) =>
                 {
-                    context.Response.ContentType = "text/plain";
-                    return $"Layer: {layer}, Z: {z}, X: {x}, Y: {y}";
+                    TileService tileService = new TileService(context.RequestServices.GetRequiredService<IDbConnection>());
+                    byte[] tile = tileService.GetVectorTileBytes(config, layer, z, x, y);
+
+                    context.Response.Headers["Cache-Control"] = $"public, max-age={config.Service?.CacheTTL ?? 0}";
+                    context.Response.Headers["Content-Encoding"] = "gzip";
+                    return Results.File(tile, "application/x-protobuf", $"tile_{z}_{x}_{y}.mvt");
                 });
 
                 app.Run();

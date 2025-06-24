@@ -29,6 +29,6 @@ public class ServiceConfig
 
 public class TileConfig
 {
-    public int DefaultResolution { get; set; } = 4096;
-    public int DefaultBufferSize { get; set; } = 256;
+    public int Extent { get; set; } = 4096;
+    public int Buffer { get; set; } = 256;
 }

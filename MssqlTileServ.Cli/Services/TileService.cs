@@ -5,6 +5,7 @@ using NetTopologySuite.Features;
 using NetTopologySuite.Geometries;
 using NetTopologySuite.IO;
 using NetTopologySuite.IO.VectorTiles;
+using NetTopologySuite.IO.VectorTiles.Mapbox;
 using NetTopologySuite.Precision;
 
 namespace MssqlTileServ.Cli.Services;
@@ -34,6 +35,9 @@ public class TileService
         {
             throw new ArgumentException("Database user or password is not configured.");
         }
+
+        // TODO: We have to know the column name of the geometry column
+        // For now, we assume the geometry column is named 'geometry'
 
         return $@"
             SELECT *
@@ -125,6 +129,29 @@ public class TileService
         return Task.FromResult(tileData);
     }
 
+    private List<IFeature> TileDataToFeatures(TileData tileData)
+    {
+        List<IFeature> features = new List<IFeature>();
+
+        WKBReader wkbReader = new WKBReader();
+
+        for (int i = 0; i < tileData.Geometries.Count; i++)
+        {
+            Geometry geometry = wkbReader.Read(tileData.Geometries[i]);
+            Dictionary<string, object?> attributesDict = tileData.Attributes[i];
+
+            AttributesTable attributesTable = new AttributesTable();
+            foreach (var kvp in attributesDict)
+            {
+                attributesTable.Add(kvp.Key, kvp.Value);
+            }
+
+            features.Add(new Feature(geometry, attributesTable));
+        }
+
+        return features;
+    }
+
     // TODO: pass config as a parameter
     private Layer CreateVectorTileLayer(string layername, TileData tileData, Envelope bounds)
     {
@@ -182,26 +209,45 @@ public class TileService
         return layer;
     }
 
-    private List<IFeature> TileDataToFeatures(TileData tileData)
+    private byte[] CompressMVT(byte[] data)
     {
-        List<IFeature> features = new List<IFeature>();
-
-        WKBReader wkbReader = new WKBReader();
-
-        for (int i = 0; i < tileData.Geometries.Count; i++)
+        using (var outputStream = new MemoryStream())
         {
-            Geometry geometry = wkbReader.Read(tileData.Geometries[i]);
-            Dictionary<string, object?> attributesDict = tileData.Attributes[i];
-
-            AttributesTable attributesTable = new AttributesTable();
-            foreach (var kvp in attributesDict)
+            using (var gzipStream = new System.IO.Compression.GZipStream(outputStream, System.IO.Compression.CompressionLevel.Optimal))
             {
-                attributesTable.Add(kvp.Key, kvp.Value);
+                gzipStream.Write(data, 0, data.Length);
             }
+            return outputStream.ToArray();
+        }
+    }
 
-            features.Add(new Feature(geometry, attributesTable));
+    public VectorTile GetVectorTile(Config config, string layername, int z, int x, int y)
+    {
+        Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
+        Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile?.Extent ?? 4096, config.Tile?.Buffer ?? 256);
+
+        var tileDefinition = new NetTopologySuite.IO.VectorTiles.Tiles.Tile(x, y, z);
+        VectorTile vectorTile = new VectorTile { TileId = tileDefinition.Id };
+
+        TileData tileData = GetTileData(config, bounds, layername).GetAwaiter().GetResult();
+        Layer layer = CreateVectorTileLayer(layername, tileData, bufferedBounds);
+        vectorTile.Layers.Add(layer);
+
+        return vectorTile;
+    }
+
+    public byte[] GetVectorTileBytes(Config config, string layername, int z, int x, int y)
+    {
+        VectorTile vt = GetVectorTile(config, layername, z, x, y);
+        byte[] tile;
+        using (var ms = new MemoryStream())
+        {
+            vt.Write(ms, MapboxTileWriter.DefaultMinLinealExtent, MapboxTileWriter.DefaultMinPolygonalExtent);
+            tile = ms.ToArray();
         }
 
-        return features;
+        tile = CompressMVT(tile);
+
+        return tile;
     }
 }

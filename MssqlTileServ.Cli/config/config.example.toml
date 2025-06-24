@@ -18,7 +18,7 @@ CORSOrigins = ["*"] # CORS allowed origins (use "*" for all)
 
 [Tile]
 # Resolution to quantize vector tiles to
-DefaultResolution = 4096
+Extent = 4096
 
 # Padding to add to vector tiles
-DefaultBufferSize = 256
+Buffer = 256
