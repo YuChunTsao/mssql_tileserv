@@ -18,6 +18,8 @@
     <PackageReference Include="NetTopologySuite.IO.VectorTiles" Version="1.1.0" />
     <PackageReference Include="NetTopologySuite.IO.VectorTiles.Mapbox" Version="1.1.0" />
     <PackageReference Include="Tomlyn" Version="0.19.0" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
+    <PackageReference Include="Microsoft.SqlServer.Types" Version="160.1000.6" />
   </ItemGroup>
 
   <ItemGroup>
