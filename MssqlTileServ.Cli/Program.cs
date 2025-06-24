@@ -2,6 +2,11 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Http;
+using MssqlTileServ.Cli.Services;
+using MssqlTileServ.Cli.Utils;
+using MssqlTileServ.Cli.Models;
+using System.Data;
+using Microsoft.Data.SqlClient;
 
 namespace MssqlTileServ.Cli
 {
@@ -11,8 +16,20 @@ namespace MssqlTileServ.Cli
         {
             RootCommand rootCommand = new("mssql_tileserv CLI tool");
 
+            string configFilePath = Path.Combine(AppContext.BaseDirectory, "config", "config.toml");
+
             rootCommand.SetAction((parseResult) =>
             {
+                Config config = TomlConfigLoader.Load(configFilePath);
+                string connectionString =
+                    $"Server={config.Database?.Server},{config.Database?.Port};" +
+                    $"Database={config.Database?.Name};" +
+                    $"User Id={config.Database?.User};" +
+                    $"Password={config.Database?.Password};" +
+                    $"TrustServerCertificate=True;" +
+                    $"Pooling=true;" +
+                    $"Max Pool Size={config.Database?.DbPoolMaxConns}";
+
                 var builder = WebApplication.CreateBuilder();
                 builder.Services.AddCors(options =>
                 {
@@ -23,6 +40,10 @@ namespace MssqlTileServ.Cli
                               .AllowAnyMethod();
                     });
                 });
+                builder.Services.AddScoped<IDbConnection>(_ =>
+                    new SqlConnection(connectionString));
+                builder.Services.AddScoped<TileService>();
+
                 var app = builder.Build();
 
                 // Use CORS middleware

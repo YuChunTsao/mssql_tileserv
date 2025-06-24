@@ -1,0 +1,24 @@
+# mssql_tileserv configuration file
+
+# Database connection settings
+[Database]
+Server = "localhost"      # Database server address
+Port = 1433               # Database port
+User = "sa"               # Username
+Password = "YourPassword" # Password
+Name = "master"           # Database name
+DbPoolMaxConns = 4        # Maximum number of connections in the pool
+DbTimeout = 10            # Timeout for database operations in seconds
+
+[Service]
+HttpPort = 5000
+HttpsPort = 5001
+CacheTTL = 0        # Cache time-to-live in seconds (0 = no caching)
+CORSOrigins = ["*"] # CORS allowed origins (use "*" for all)
+
+[Tile]
+# Resolution to quantize vector tiles to
+DefaultResolution = 4096
+
+# Padding to add to vector tiles
+DefaultBufferSize = 256
