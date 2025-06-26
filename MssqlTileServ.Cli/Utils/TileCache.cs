@@ -9,11 +9,11 @@ public class TileCache
         _cache = new MemoryCache(new MemoryCacheOptions());
     }
 
-    public byte[] GetOrAdd(string key, Func<byte[]> valueFactory, TimeSpan expiration)
+    public async Task<byte[]> GetOrAddAsync(string key, Func<Task<byte[]>> valueFactory, TimeSpan expiration)
     {
         if (!_cache.TryGetValue(key, out byte[] value))
         {
-            value = valueFactory();
+            value = await valueFactory();
             _cache.Set(key, value, expiration);
         }
         return value;

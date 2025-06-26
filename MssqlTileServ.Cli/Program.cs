@@ -28,7 +28,7 @@ namespace MssqlTileServ.Cli
                     $"Password={config.Database.Password};" +
                     $"TrustServerCertificate=True;" +
                     $"Pooling=true;" +
-                    $"Max Pool Size={config.Database?.DbPoolMaxConns}";
+                    $"Max Pool Size={config.Database.DbPoolMaxConns}";
 
                 var builder = WebApplication.CreateBuilder();
 
@@ -103,7 +103,7 @@ namespace MssqlTileServ.Cli
                 });
 
                 var tileCache = new TileCache();
-                app.MapGet("{layer}/{z:int}/{x:int}/{y:int}", (HttpContext context, string layer, int z, int x, int y, TileService tileService) =>
+                app.MapGet("{layer}/{z:int}/{x:int}/{y:int}", async (HttpContext context, string layer, int z, int x, int y, TileService tileService) =>
                 {
                     string cacheKey = $"{layer}-{z}/{x}/{y}";
 
@@ -118,14 +118,14 @@ namespace MssqlTileServ.Cli
                     bool memoryCacheEnabled = config.Service.MemoryExpirationSeconds > 0;
                     if (memoryCacheEnabled)
                     {
-                        tile = tileCache.GetOrAdd(cacheKey, () =>
+                        tile = await tileCache.GetOrAddAsync(cacheKey, async () =>
                         {
-                            return tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
+                            return await tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
                         }, TimeSpan.FromSeconds(config.Service.MemoryExpirationSeconds));
                     }
                     else
                     {
-                        tile = tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
+                        tile = await tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
                     }
 
                     if (config.Service.CacheTTL > 0)

@@ -58,21 +58,21 @@ public class TileService
     }
 
     // TODO: Maybe we should use NetTopologySuite.IO.SqlServerBytes to handle the conversion more efficiently
-    private Task<TileData> GetTileData(Config config, string sqlQuery)
+    private async Task<TileData> GetTileData(Config config, string sqlQuery)
     {
         TileData tileData = new TileData();
 
         using (var connection = new SqlConnection(_connectionString))
         {
-            connection.Open();
+            await connection.OpenAsync();
             using (var command = connection.CreateCommand())
             {
                 command.CommandText = sqlQuery;
-                command.CommandTimeout = config.Database?.DbTimeout ?? 10;
+                command.CommandTimeout = config.Database.DbTimeout;
 
-                using (var reader = command.ExecuteReader())
+                using (var reader = await command.ExecuteReaderAsync())
                 {
-                    while (reader.Read())
+                    while (await reader.ReadAsync())
                     {
                         var attributes = new Dictionary<string, object?>();
                         byte[]? geometry = null;
@@ -110,7 +110,7 @@ public class TileService
             }
         }
 
-        return Task.FromResult(tileData);
+        return tileData;
     }
 
     private List<IFeature> TileDataToFeatures(TileData tileData)
@@ -167,7 +167,7 @@ public class TileService
         }
     }
 
-    public VectorTile GetVectorTile(Config config, LayerMeta layerMeta, int z, int x, int y)
+    public async Task<VectorTile> GetVectorTile(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
         Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
@@ -194,7 +194,7 @@ public class TileService
 
         string layername = layerMeta.Name;
         string sqlQuery = PrepareSqlQuery(config, bounds, bufferedBounds, layerMeta);
-        TileData tileData = GetTileData(config, sqlQuery).GetAwaiter().GetResult();
+        TileData tileData = await GetTileData(config, sqlQuery);
 
         // If the projection of the layer is not WGS84, we need to transform the geometries in the tileData
         if (layerMeta.SRID != null && layerMeta.SRID.Length > 0 && layerMeta.SRID[0] != EPSG_4326)
@@ -215,9 +215,9 @@ public class TileService
     }
 
     // TODO: Support multiple layers in a single tile
-    public byte[] GetVectorTileBytes(Config config, LayerMeta layerMeta, int z, int x, int y)
+    public async Task<byte[]> GetVectorTileBytes(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
-        VectorTile vt = GetVectorTile(config, layerMeta, z, x, y);
+        VectorTile vt = await GetVectorTile(config, layerMeta, z, x, y);
         byte[] tile;
         using (var ms = new MemoryStream())
         {
