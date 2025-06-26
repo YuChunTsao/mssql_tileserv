@@ -5,8 +5,6 @@ using Microsoft.AspNetCore.Http;
 using MssqlTileServ.Cli.Services;
 using MssqlTileServ.Cli.Utils;
 using MssqlTileServ.Cli.Models;
-using System.Data;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.FileProviders;
 using System.Reflection;
 
@@ -75,6 +73,8 @@ namespace MssqlTileServ.Cli
                 Console.WriteLine("Checking available layers...");
                 List<LayerMeta> layers = TileService.GetAvailableTables(connectionString);
                 Console.WriteLine("Finished checking layers.");
+
+                SridWktLoader.LoadFromCsv("Resources/epsg_wkt_mapping.csv");
 
                 var embeddedProvider = new EmbeddedFileProvider(Assembly.GetExecutingAssembly(), "MssqlTileServ.Cli.wwwroot");
 

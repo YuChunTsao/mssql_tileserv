@@ -1,31 +1,47 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Types;
 using MssqlTileServ.Cli.Models;
+using MssqlTileServ.Cli.Utils;
 using NetTopologySuite.Features;
 using NetTopologySuite.Geometries;
 using NetTopologySuite.IO;
 using NetTopologySuite.IO.VectorTiles;
 using NetTopologySuite.IO.VectorTiles.Mapbox;
-using NetTopologySuite.Precision;
 
 namespace MssqlTileServ.Cli.Services;
 
 public class TileService
 {
     private readonly string _connectionString;
+    private const int EPSG_4326 = 4326;
 
     public TileService(string connectionString)
     {
         _connectionString = connectionString;
     }
 
-    private string PrepareSqlQuery(Config config, Envelope bounds, LayerMeta layerMeta)
+    private string PrepareSqlQuery(Config config, Envelope bounds, Envelope bufferedBounds, LayerMeta layerMeta)
     {
         string layername = layerMeta.Name;
         string geometryColumnName = layerMeta.GeometryColumnName;
         int SRID = layerMeta.SRID[0];
+
+        // FIXME: Now, it will return two geometries: the original geometry and the intersection with the buffered bounds.
+        // Pass columns to the query to avoid returning the same geometry twice.
         return $@"
-            SELECT *
+            SELECT
+                *,
+                {geometryColumnName}.STIntersection(
+                    geometry::STGeomFromText(
+                        'POLYGON((
+                            {bufferedBounds.MinX} {bufferedBounds.MaxY},
+                            {bufferedBounds.MaxX} {bufferedBounds.MaxY},
+                            {bufferedBounds.MaxX} {bufferedBounds.MinY},
+                            {bufferedBounds.MinX} {bufferedBounds.MinY},
+                            {bufferedBounds.MinX} {bufferedBounds.MaxY}
+                        ))', {SRID}
+                    )
+                ) AS {geometryColumnName}
             FROM {config.Database.Name}.{config.Database.Schema}.{layername}
             WHERE {geometryColumnName}.STIntersects(
                 geometry::STGeomFromText(
@@ -41,6 +57,7 @@ public class TileService
           ";
     }
 
+    // TODO: Maybe we should use NetTopologySuite.IO.SqlServerBytes to handle the conversion more efficiently
     private Task<TileData> GetTileData(Config config, string sqlQuery)
     {
         TileData tileData = new TileData();
@@ -89,7 +106,6 @@ public class TileService
                             tileData.Attributes.Add(attributes);
                         }
                     }
-
                 }
             }
         }
@@ -120,46 +136,9 @@ public class TileService
         return features;
     }
 
-    private Layer CreateVectorTileLayer(string layername, TileData tileData, Envelope bounds)
+    private Layer CreateVectorTileLayer(string layername, TileData tileData)
     {
-        // TODO:
-        // Now, we suppose that the projection is WGS84 (EPSG:4326)
-        // I'll Implement a method to handle different projections later
-
         List<IFeature> features = TileDataToFeatures(tileData);
-
-        // Clip the features with the buffered bounds
-        PrecisionModel precisionModel = new PrecisionModel(1e6);
-        GeometryFactory geometryFactory = new GeometryFactory(precisionModel);
-        GeometryPrecisionReducer reducer = new GeometryPrecisionReducer(precisionModel);
-        Geometry bufferedBounds = geometryFactory.ToGeometry(bounds);
-        var reducedTile = reducer.Reduce(bufferedBounds);
-
-        // Iterate through the features and reduce their geometries
-        for (int i = 0; i < features.Count; i++)
-        {
-            // If the geometry is point or multipoint, we can skip the reduction
-            if (features[i].Geometry is Point || features[i].Geometry is MultiPoint)
-            {
-                continue;
-            }
-
-            var reducedGeometry = reducer.Reduce(features[i].Geometry);
-
-            // Clip the feature geometry to the tile bounds
-            Geometry clippedGeometry = reducedGeometry.Intersection(reducedTile);
-            if (clippedGeometry.IsEmpty)
-            {
-                features.RemoveAt(i);
-                i--; // Adjust index after removal
-                continue;
-            }
-            else
-            {
-                // Update the feature with the clipped geometry
-                features[i] = new Feature(clippedGeometry, features[i].Attributes);
-            }
-        }
 
         // TODO: Simplify the geometries if needed
 
@@ -193,18 +172,49 @@ public class TileService
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
         Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
 
+        if (layerMeta.SRID != null && layerMeta.SRID.Length > 0 && layerMeta.SRID[0] != EPSG_4326)
+        {
+            // Convert the bounds to a geometry
+            GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), EPSG_4326);
+            Geometry boundsGeometry = geometryFactory.ToGeometry(bounds);
+
+            // Project the bounds to the layer's SRID
+            boundsGeometry = boundsGeometry.ProjectTo(layerMeta.SRID[0]);
+
+            // Update the bounds with the projected geometry
+            bounds = boundsGeometry.EnvelopeInternal;
+
+            Geometry bufferedBoundsGeometry = geometryFactory.ToGeometry(bufferedBounds);
+            bufferedBoundsGeometry = bufferedBoundsGeometry.ProjectTo(layerMeta.SRID[0]);
+            bufferedBounds = bufferedBoundsGeometry.EnvelopeInternal;
+        }
+
         var tileDefinition = new NetTopologySuite.IO.VectorTiles.Tiles.Tile(x, y, z);
         VectorTile vectorTile = new VectorTile { TileId = tileDefinition.Id };
 
         string layername = layerMeta.Name;
-        string sqlQuery = PrepareSqlQuery(config, bounds, layerMeta);
+        string sqlQuery = PrepareSqlQuery(config, bounds, bufferedBounds, layerMeta);
         TileData tileData = GetTileData(config, sqlQuery).GetAwaiter().GetResult();
-        Layer layer = CreateVectorTileLayer(layername, tileData, bufferedBounds);
+
+        // If the projection of the layer is not WGS84, we need to transform the geometries in the tileData
+        if (layerMeta.SRID != null && layerMeta.SRID.Length > 0 && layerMeta.SRID[0] != EPSG_4326)
+        {
+            for (int i = 0; i < tileData.Geometries.Count; i++)
+            {
+                Geometry geometry = new WKBReader().Read(tileData.Geometries[i]);
+                geometry.SRID = layerMeta.SRID[0];
+                geometry = geometry.ProjectTo(EPSG_4326);
+                tileData.Geometries[i] = new WKBWriter().Write(geometry);
+            }
+        }
+
+        Layer layer = CreateVectorTileLayer(layername, tileData);
         vectorTile.Layers.Add(layer);
 
         return vectorTile;
     }
 
+    // TODO: Support multiple layers in a single tile
     public byte[] GetVectorTileBytes(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
         VectorTile vt = GetVectorTile(config, layerMeta, z, x, y);
