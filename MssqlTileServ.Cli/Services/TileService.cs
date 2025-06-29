@@ -57,11 +57,9 @@ public class TileService
           ";
     }
 
-    // TODO: Maybe we should use NetTopologySuite.IO.SqlServerBytes to handle the conversion more efficiently
     private async Task<TileData> GetTileData(Config config, string sqlQuery)
     {
         TileData tileData = new TileData();
-
         using (var connection = new SqlConnection(_connectionString))
         {
             await connection.OpenAsync();
@@ -74,24 +72,20 @@ public class TileService
                 {
                     while (await reader.ReadAsync())
                     {
+                        Geometry? geometry = null;
                         var attributes = new Dictionary<string, object?>();
-                        byte[]? geometry = null;
 
                         for (int i = 0; i < reader.FieldCount; i++)
                         {
                             // Check if the column is of type SqlGeometry or SqlGeography
                             if (reader.GetFieldType(i) == typeof(SqlGeometry) || reader.GetFieldType(i) == typeof(SqlGeography))
                             {
-                                if (reader[i] is SqlGeometry sqlGeom)
+                                var geometryReader = new SqlServerBytesReader
                                 {
-                                    // Convert SqlGeometry to WKB
-                                    geometry = sqlGeom.STAsBinary().Value;
-                                }
-                                else if (reader[i] is SqlGeography sqlGeog)
-                                {
-                                    // Convert SqlGeography to WKB
-                                    geometry = sqlGeog.STAsBinary().Value;
-                                }
+                                    IsGeography = reader.GetFieldType(i) == typeof(SqlGeography)
+                                };
+                                var bytes = reader.GetSqlBytes(i).Value;
+                                geometry = geometryReader.Read(bytes);
                             }
                             else
                             {
@@ -117,11 +111,9 @@ public class TileService
     {
         List<IFeature> features = new List<IFeature>();
 
-        WKBReader wkbReader = new WKBReader();
-
         for (int i = 0; i < tileData.Geometries.Count; i++)
         {
-            Geometry geometry = wkbReader.Read(tileData.Geometries[i]);
+            Geometry geometry = tileData.Geometries[i];
             Dictionary<string, object?> attributesDict = tileData.Attributes[i];
 
             AttributesTable attributesTable = new AttributesTable();
@@ -201,10 +193,8 @@ public class TileService
         {
             for (int i = 0; i < tileData.Geometries.Count; i++)
             {
-                Geometry geometry = new WKBReader().Read(tileData.Geometries[i]);
-                geometry.SRID = layerMeta.SRID[0];
-                geometry = geometry.ProjectTo(EPSG_4326);
-                tileData.Geometries[i] = new WKBWriter().Write(geometry);
+                tileData.Geometries[i].SRID = layerMeta.SRID[0];
+                tileData.Geometries[i] = tileData.Geometries[i].ProjectTo(EPSG_4326);
             }
         }
 
