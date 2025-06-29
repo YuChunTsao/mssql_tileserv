@@ -24,7 +24,7 @@ public class TileService
     {
         string layername = layerMeta.Name;
         string geometryColumnName = layerMeta.GeometryColumnName;
-        int SRID = layerMeta.SRID[0];
+        int SRID = layerMeta.SRID;
 
         // FIXME: Now, it will return two geometries: the original geometry and the intersection with the buffered bounds.
         // Pass columns to the query to avoid returning the same geometry twice.
@@ -164,20 +164,20 @@ public class TileService
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
         Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
 
-        if (layerMeta.SRID != null && layerMeta.SRID.Length > 0 && layerMeta.SRID[0] != EPSG_4326)
+        if (layerMeta.SRID != EPSG_4326)
         {
             // Convert the bounds to a geometry
             GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), EPSG_4326);
             Geometry boundsGeometry = geometryFactory.ToGeometry(bounds);
 
             // Project the bounds to the layer's SRID
-            boundsGeometry = boundsGeometry.ProjectTo(layerMeta.SRID[0]);
+            boundsGeometry = boundsGeometry.ProjectTo(layerMeta.SRID);
 
             // Update the bounds with the projected geometry
             bounds = boundsGeometry.EnvelopeInternal;
 
             Geometry bufferedBoundsGeometry = geometryFactory.ToGeometry(bufferedBounds);
-            bufferedBoundsGeometry = bufferedBoundsGeometry.ProjectTo(layerMeta.SRID[0]);
+            bufferedBoundsGeometry = bufferedBoundsGeometry.ProjectTo(layerMeta.SRID);
             bufferedBounds = bufferedBoundsGeometry.EnvelopeInternal;
         }
 
@@ -189,11 +189,11 @@ public class TileService
         TileData tileData = await GetTileData(config, sqlQuery);
 
         // If the projection of the layer is not WGS84, we need to transform the geometries in the tileData
-        if (layerMeta.SRID != null && layerMeta.SRID.Length > 0 && layerMeta.SRID[0] != EPSG_4326)
+        if (layerMeta.SRID != EPSG_4326)
         {
             for (int i = 0; i < tileData.Geometries.Count; i++)
             {
-                tileData.Geometries[i].SRID = layerMeta.SRID[0];
+                tileData.Geometries[i].SRID = layerMeta.SRID;
                 tileData.Geometries[i] = tileData.Geometries[i].ProjectTo(EPSG_4326);
             }
         }
@@ -249,6 +249,8 @@ public class TileService
             {tableName}
           WHERE
             {geometryColumnName} IS NOT NULL
+          GROUP BY
+            {geometryColumnName}.STSrid
         """;
 
         string sql_find_spatial_index = """
@@ -277,13 +279,11 @@ public class TileService
                         var columnName = reader.GetString(reader.GetOrdinal("ColumnName"));
                         var typeName = reader.GetString(reader.GetOrdinal("TypeName"));
 
-                        // TODO: Only get the first geometry column (?)
-
                         // Check if the layer already exists
                         var existingLayer = layers.FirstOrDefault(l => l.Name == objectName);
                         if (existingLayer == null)
                         {
-                            // Create a new layer meta
+                            // If the layer already exists, we assume it has only one geometry column
                             layers.Add(new LayerMeta
                             {
                                 Name = objectName,
@@ -291,12 +291,6 @@ public class TileService
                                 GeometryColumnName = columnName,
                                 GeometryTypeName = typeName
                             });
-                        }
-                        else
-                        {
-                            // Update the existing layer with the geometry column and type
-                            existingLayer.GeometryColumnName = columnName;
-                            existingLayer.GeometryTypeName = typeName;
                         }
                     }
                 }
@@ -315,22 +309,33 @@ public class TileService
                     command.CommandText = sql_find_srid
                         .Replace("{geometryColumnName}", layer.GeometryColumnName)
                         .Replace("{tableName}", layer.Name);
+
                     using (var sridReader = command.ExecuteReader())
                     {
-                        List<int> srids = new List<int>();
+                        int count = 0;
                         while (sridReader.Read())
                         {
-                            if (!sridReader.IsDBNull(0))
+                            // if the layer has multiple SRIDs, we will not use it to serve tiles
+                            if (count > 0)
                             {
-                                srids.Add(sridReader.GetInt32(0));
+                                layer.HealthLevel = LayerHealthLevel.Unhealthy;
+                                string msg = $"Layer '{layer.Name}' has multiple SRIDs. It will not be used to serve tiles.";
+                                layer.HealthMessages.Add(msg);
+                                break;
                             }
+
+                            // Get the SRID for the geometry column
+                            int srid = sridReader.GetInt32(sridReader.GetOrdinal("SRID"));
+                            layer.SRID = srid;
+
+                            count++;
                         }
-                        layer.SRID = srids.Distinct().ToArray(); // Store distinct SRIDs
                     }
                 }
             }
         }
 
+        List<string> hasSpatialIndexLayers = new List<string>();
         using (var connection = new SqlConnection(connectionString))
         {
             connection.Open();
@@ -343,12 +348,32 @@ public class TileService
                     while (spatialIndexReader.Read())
                     {
                         var tableName = spatialIndexReader.GetString(spatialIndexReader.GetOrdinal("table_name"));
-                        var layer = layers.FirstOrDefault(l => l.Name == tableName);
-                        if (layer != null)
-                        {
-                            layer.HasSpatialIndex = true;
-                        }
+                        hasSpatialIndexLayers.Add(tableName);
                     }
+                }
+            }
+        }
+
+        foreach (var layer in layers)
+        {
+            if (hasSpatialIndexLayers.Contains(layer.Name))
+            {
+                layer.HasSpatialIndex = true;
+            }
+            else
+            {
+                layer.HasSpatialIndex = false;
+
+                if (layer.HealthLevel == LayerHealthLevel.Unhealthy)
+                {
+                    string msg = $"Layer '{layer.Name}' does not have a spatial index.";
+                    layer.HealthMessages.Add(msg);
+                }
+                else
+                {
+                    layer.HealthLevel = LayerHealthLevel.Warning;
+                    string msg = $"Layer '{layer.Name}' does not have a spatial index. This may affect performance.";
+                    layer.HealthMessages.Add(msg);
                 }
             }
         }

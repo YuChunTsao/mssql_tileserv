@@ -51,7 +51,7 @@
         <th>Object Type</th>
         <th>Geometry Column</th>
         <th>Geometry Type</th>
-        <th>SRID(s)</th>
+        <th>SRID</th>
         <th>Spatial Index</th>
         <th>Health</th>
       </tr>
@@ -73,33 +73,23 @@
     }
 
     function getHealth(row) {
-      if (!Array.isArray(row.srid) || row.srid.length !== 1 || !row.srid[0]) {
-        return '⚠️ Warning';
+      // row.Healthlevel = 0 => "Healthy"
+      // row.Healthlevel = 1 => "Warning"
+      // row.Healthlevel = 2 => "Unhealthy"
+      switch (row.healthLevel) {
+        case 0:
+          return '✅ Healthy';
+        case 1:
+          return '⚠️ Warning';
+        case 2:
+          return '❌ Unhealthy';
+        default:
+          return '❓ Unknown';
       }
-
-      // if the table without spatial index, return warning
-      if (!row.hasSpatialIndex) {
-        return '⚠️ Warning';
-      }
-
-      return '✅ Good';
     }
 
     function hasSpatialIndex(hasSpatialIndex) {
       return hasSpatialIndex ? '✅ Yes' : '❌ No';
-    }
-
-    function getSRID(srid) {
-      // if the count of srid is 1, return the first one 
-      // if the count of srid is more than 1, return the list
-      // if the count of srid is 0, return a question emoji
-      if (!Array.isArray(srid) || srid.length === 0) {
-        return '❓ Unknown';
-      }
-      if (srid.length === 1) {
-        return srid[0];
-      }
-      return srid.join(', ');
     }
 
     function renderTable(data) {
@@ -116,7 +106,7 @@
           <td>${objectType}</td>
           <td>${row.geometryColumnName}</td>
           <td>${row.geometryTypeName}</td>
-          <td class="srid-list">${getSRID(row.srid)}</td>
+          <td>${row.srid}</td>
           <td>${hasSpatialIndex(row.hasSpatialIndex)}</td>
           <td>${getHealth(row)}</td>
         `;
