@@ -72,6 +72,11 @@ namespace MssqlTileServ.Cli
                 // Check all available layers
                 Console.WriteLine("Checking available layers...");
                 List<LayerMeta> layers = TileService.GetAvailableTables(connectionString);
+                foreach (var layer in layers)
+                {
+                    List<string> columns = TileService.GetTableColumns(connectionString, config.Database.Schema, layer.Name);
+                    layer.Columns = columns;
+                }
                 Console.WriteLine("Finished checking layers.");
 
                 SridWktLoader.LoadFromCsv("Resources/epsg_wkt_mapping.csv");

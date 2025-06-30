@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.SqlTypes;
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Types;
 using MssqlTileServ.Cli.Models;
@@ -20,51 +22,40 @@ public class TileService
         _connectionString = connectionString;
     }
 
-    private string PrepareSqlQuery(Config config, Envelope bounds, Envelope bufferedBounds, LayerMeta layerMeta)
+    private async Task<TileData> GetTileData(Config config, Geometry boundsGeometry, Geometry bufferedBoundsGeometry, LayerMeta layerMeta)
     {
         string layername = layerMeta.Name;
         string geometryColumnName = layerMeta.GeometryColumnName;
         int SRID = layerMeta.SRID;
 
-        // FIXME: Now, it will return two geometries: the original geometry and the intersection with the buffered bounds.
-        // Pass columns to the query to avoid returning the same geometry twice.
-        return $@"
-            SELECT
-                *,
-                {geometryColumnName}.STIntersection(
-                    geometry::STGeomFromText(
-                        'POLYGON((
-                            {bufferedBounds.MinX} {bufferedBounds.MaxY},
-                            {bufferedBounds.MaxX} {bufferedBounds.MaxY},
-                            {bufferedBounds.MaxX} {bufferedBounds.MinY},
-                            {bufferedBounds.MinX} {bufferedBounds.MinY},
-                            {bufferedBounds.MinX} {bufferedBounds.MaxY}
-                        ))', {SRID}
-                    )
-                ) AS {geometryColumnName}
-            FROM {config.Database.Name}.{config.Database.Schema}.{layername}
-            WHERE {geometryColumnName}.STIntersects(
-                geometry::STGeomFromText(
-                    'POLYGON((
-                        {bounds.MinX} {bounds.MaxY},
-                        {bounds.MaxX} {bounds.MaxY},
-                        {bounds.MaxX} {bounds.MinY},
-                        {bounds.MinX} {bounds.MinY},
-                        {bounds.MinX} {bounds.MaxY}
-                    ))', {SRID}
-                )
-            ) = 1
-          ";
-    }
+        var columnList = string.Join(", ", layerMeta.Columns.Where(c => !string.Equals(c, geometryColumnName, StringComparison.OrdinalIgnoreCase))
+            .Select(c => $"[{c}]"));
 
-    private async Task<TileData> GetTileData(Config config, string sqlQuery)
-    {
+        string sqlQuery =
+        $@"
+          SELECT
+              {columnList},
+              {geometryColumnName}.STIntersection(@bufferedBoundsGeometry) AS {geometryColumnName}
+          FROM {config.Database.Name}.{config.Database.Schema}.{layername}
+          WHERE {geometryColumnName}.STIntersects(@boundsGeometry) = 1
+        ";
+
+
         TileData tileData = new TileData();
         using (var connection = new SqlConnection(_connectionString))
         {
             await connection.OpenAsync();
             using (var command = connection.CreateCommand())
             {
+                var geometryWriter = new SqlServerBytesWriter { IsGeography = layerMeta.GeometryTypeName == "geography" };
+                var parameter = command.Parameters
+                    .AddWithValue("boundsGeometry", new SqlBytes(geometryWriter.Write(boundsGeometry)));
+                parameter = command.Parameters
+                    .AddWithValue("bufferedBoundsGeometry", new SqlBytes(geometryWriter.Write(bufferedBoundsGeometry)));
+
+                parameter.SqlDbType = SqlDbType.Udt;
+                parameter.UdtTypeName = layerMeta.GeometryTypeName;
+
                 command.CommandText = sqlQuery;
                 command.CommandTimeout = config.Database.DbTimeout;
 
@@ -164,29 +155,21 @@ public class TileService
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
         Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
 
+        Geometry boundsGeometry = new GeometryFactory(new PrecisionModel(), EPSG_4326).ToGeometry(bounds);
+        Geometry bufferedBoundsGeometry = new GeometryFactory(new PrecisionModel(), EPSG_4326).ToGeometry(bufferedBounds);
+
         if (layerMeta.SRID != EPSG_4326)
         {
-            // Convert the bounds to a geometry
-            GeometryFactory geometryFactory = new GeometryFactory(new PrecisionModel(), EPSG_4326);
-            Geometry boundsGeometry = geometryFactory.ToGeometry(bounds);
-
             // Project the bounds to the layer's SRID
             boundsGeometry = boundsGeometry.ProjectTo(layerMeta.SRID);
-
-            // Update the bounds with the projected geometry
-            bounds = boundsGeometry.EnvelopeInternal;
-
-            Geometry bufferedBoundsGeometry = geometryFactory.ToGeometry(bufferedBounds);
             bufferedBoundsGeometry = bufferedBoundsGeometry.ProjectTo(layerMeta.SRID);
-            bufferedBounds = bufferedBoundsGeometry.EnvelopeInternal;
         }
 
         var tileDefinition = new NetTopologySuite.IO.VectorTiles.Tiles.Tile(x, y, z);
         VectorTile vectorTile = new VectorTile { TileId = tileDefinition.Id };
 
         string layername = layerMeta.Name;
-        string sqlQuery = PrepareSqlQuery(config, bounds, bufferedBounds, layerMeta);
-        TileData tileData = await GetTileData(config, sqlQuery);
+        TileData tileData = await GetTileData(config, boundsGeometry, bufferedBoundsGeometry, layerMeta);
 
         // If the projection of the layer is not WGS84, we need to transform the geometries in the tileData
         if (layerMeta.SRID != EPSG_4326)
@@ -379,5 +362,41 @@ public class TileService
         }
 
         return layers;
+    }
+
+    public static List<string> GetTableColumns(string connectionString, string schema, string tableName)
+    {
+        List<string> columns = new List<string>();
+
+        string sql = @"
+        SELECT
+          COLUMN_NAME
+        FROM
+          INFORMATION_SCHEMA.COLUMNS
+        WHERE
+          TABLE_SCHEMA = @schema AND
+          TABLE_NAME = @table
+        ";
+
+        using (var connection = new SqlConnection(connectionString))
+        {
+            connection.Open();
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = sql;
+                command.Parameters.AddWithValue("schema", schema);
+                command.Parameters.AddWithValue("table", tableName);
+
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        columns.Add(reader.GetString(0));
+                    }
+                }
+            }
+        }
+
+        return columns;
     }
 }

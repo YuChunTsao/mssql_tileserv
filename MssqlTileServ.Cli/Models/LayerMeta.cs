@@ -23,5 +23,7 @@ namespace MssqlTileServ.Cli.Models
         public LayerHealthLevel HealthLevel { get; set; }
         // Health message
         public List<string> HealthMessages { get; set; } = new List<string>();
+
+        public List<string> Columns { get; set; } = new List<string>(); // List of columns in the table or view
     }
 }

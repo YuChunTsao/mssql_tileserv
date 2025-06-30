@@ -24,6 +24,7 @@ namespace MssqlTileServ.Cli.Utils
 
             var result = geometry.Copy();
             result.Apply(new MathTransformFilter(transformation.MathTransform));
+            result.SRID = srid;
 
             return result;
         }
