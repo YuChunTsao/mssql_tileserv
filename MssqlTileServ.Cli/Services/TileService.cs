@@ -100,7 +100,7 @@ public class TileService
 
     private List<IFeature> TileDataToFeatures(TileData tileData)
     {
-        List<IFeature> features = new List<IFeature>();
+        List<IFeature> features = new List<IFeature>(tileData.Geometries.Count);
 
         for (int i = 0; i < tileData.Geometries.Count; i++)
         {
@@ -205,9 +205,10 @@ public class TileService
 
     public static List<LayerMeta> GetAvailableTables(string connectionString)
     {
-        List<LayerMeta> layers = new List<LayerMeta>();
+        var layers = new List<LayerMeta>();
+        var layerDict = new Dictionary<string, LayerMeta>();
 
-        string sql_find_table_info = """
+        const string sqlFindTableInfo = @"
         SELECT
             o.name AS ObjectName,
             o.type AS ObjectType,
@@ -220,23 +221,10 @@ public class TileService
         JOIN
             sys.types ty ON c.user_type_id = ty.user_type_id
         WHERE
-            o.type IN ('U', 'V') -- U: Table, V: View
-            AND ty.name IN ('geometry', 'geography');
-        """;
+            o.type IN ('U', 'V')
+            AND ty.name IN ('geometry', 'geography');";
 
-        // SQL Server allows users to store geometries with different SRIDs in the same geometry column.
-        string sql_find_srid = """
-          SELECT
-            {geometryColumnName}.STSrid AS SRID
-          FROM
-            {tableName}
-          WHERE
-            {geometryColumnName} IS NOT NULL
-          GROUP BY
-            {geometryColumnName}.STSrid
-        """;
-
-        string sql_find_spatial_index = """
+        const string sqlFindSpatialIndex = @"
         SELECT
             t.name AS table_name
         FROM
@@ -244,119 +232,98 @@ public class TileService
         JOIN
             sys.schemas s ON t.schema_id = s.schema_id
         JOIN
-            sys.indexes i ON i.object_id = t.object_id AND i.type_desc = 'SPATIAL'
-        """;
+            sys.indexes i ON i.object_id = t.object_id AND i.type_desc = 'SPATIAL';";
 
-        using (var connection = new SqlConnection(connectionString))
+        using var connection = new SqlConnection(connectionString);
+        connection.Open();
+
+        // 1. Get geometry tables/views
+        using (var command = connection.CreateCommand())
         {
-            connection.Open();
-            using (var command = connection.CreateCommand())
+            Console.WriteLine("Checking for geometry/geography columns in the database...");
+            command.CommandText = sqlFindTableInfo;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
             {
-                command.CommandText = sql_find_table_info;
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        var objectName = reader.GetString(reader.GetOrdinal("ObjectName"));
-                        var objectType = reader.GetString(reader.GetOrdinal("ObjectType"));
-                        var columnName = reader.GetString(reader.GetOrdinal("ColumnName"));
-                        var typeName = reader.GetString(reader.GetOrdinal("TypeName"));
+                var objectName = reader.GetString(reader.GetOrdinal("ObjectName"));
+                var objectType = reader.GetString(reader.GetOrdinal("ObjectType"));
+                var columnName = reader.GetString(reader.GetOrdinal("ColumnName"));
+                var typeName = reader.GetString(reader.GetOrdinal("TypeName"));
 
-                        // Check if the layer already exists
-                        var existingLayer = layers.FirstOrDefault(l => l.Name == objectName);
-                        if (existingLayer == null)
-                        {
-                            // If the layer already exists, we assume it has only one geometry column
-                            layers.Add(new LayerMeta
-                            {
-                                Name = objectName,
-                                ObjectType = objectType,
-                                GeometryColumnName = columnName,
-                                GeometryTypeName = typeName
-                            });
-                        }
-                    }
+                if (!layerDict.ContainsKey(objectName))
+                {
+                    var layer = new LayerMeta
+                    {
+                        Name = objectName,
+                        ObjectType = objectType,
+                        GeometryColumnName = columnName,
+                        GeometryTypeName = typeName
+                    };
+                    layers.Add(layer);
+                    layerDict[objectName] = layer;
                 }
             }
         }
 
-        using (var connection = new SqlConnection(connectionString))
-        {
-            connection.Open();
-            using (var command = connection.CreateCommand())
-            {
-                // Query the SRID for each layer
-                command.CommandText = sql_find_srid;
-                foreach (var layer in layers)
-                {
-                    command.CommandText = sql_find_srid
-                        .Replace("{geometryColumnName}", layer.GeometryColumnName)
-                        .Replace("{tableName}", layer.Name);
-
-                    using (var sridReader = command.ExecuteReader())
-                    {
-                        int count = 0;
-                        while (sridReader.Read())
-                        {
-                            // if the layer has multiple SRIDs, we will not use it to serve tiles
-                            if (count > 0)
-                            {
-                                layer.HealthLevel = LayerHealthLevel.Unhealthy;
-                                string msg = $"Layer '{layer.Name}' has multiple SRIDs. It will not be used to serve tiles.";
-                                layer.HealthMessages.Add(msg);
-                                break;
-                            }
-
-                            // Get the SRID for the geometry column
-                            int srid = sridReader.GetInt32(sridReader.GetOrdinal("SRID"));
-                            layer.SRID = srid;
-
-                            count++;
-                        }
-                    }
-                }
-            }
-        }
-
-        List<string> hasSpatialIndexLayers = new List<string>();
-        using (var connection = new SqlConnection(connectionString))
-        {
-            connection.Open();
-            using (var command = connection.CreateCommand())
-            {
-                // Query the spatial index for each layer
-                command.CommandText = sql_find_spatial_index;
-                using (var spatialIndexReader = command.ExecuteReader())
-                {
-                    while (spatialIndexReader.Read())
-                    {
-                        var tableName = spatialIndexReader.GetString(spatialIndexReader.GetOrdinal("table_name"));
-                        hasSpatialIndexLayers.Add(tableName);
-                    }
-                }
-            }
-        }
-
+        // 2. Get SRID for each layer
+        Console.WriteLine("Checking SRIDs for geometry/geography columns...");
         foreach (var layer in layers)
         {
-            if (hasSpatialIndexLayers.Contains(layer.Name))
-            {
-                layer.HasSpatialIndex = true;
-            }
-            else
-            {
-                layer.HasSpatialIndex = false;
+            var sqlFindSrid = $@"
+            SELECT
+                [{layer.GeometryColumnName}].STSrid AS SRID
+            FROM
+                [{layer.Name}]
+            WHERE
+                [{layer.GeometryColumnName}] IS NOT NULL
+            GROUP BY
+                [{layer.GeometryColumnName}].STSrid";
 
+            using var command = connection.CreateCommand();
+            command.CommandText = sqlFindSrid;
+            using var sridReader = command.ExecuteReader();
+            int count = 0;
+            while (sridReader.Read())
+            {
+                if (count > 0)
+                {
+                    layer.HealthLevel = LayerHealthLevel.Unhealthy;
+                    layer.HealthMessages.Add($"Layer '{layer.Name}' has multiple SRIDs. It will not be used to serve tiles.");
+                    break;
+                }
+                layer.SRID = sridReader.GetInt32(sridReader.GetOrdinal("SRID"));
+                count++;
+            }
+        }
+
+        // 3. Get spatial index info
+        var hasSpatialIndexLayers = new HashSet<string>();
+        using (var command = connection.CreateCommand())
+        {
+            Console.WriteLine("Checking for spatial indexes in the database...");
+            command.CommandText = sqlFindSpatialIndex;
+            using var spatialIndexReader = command.ExecuteReader();
+            while (spatialIndexReader.Read())
+            {
+                var tableName = spatialIndexReader.GetString(spatialIndexReader.GetOrdinal("table_name"));
+                hasSpatialIndexLayers.Add(tableName);
+            }
+        }
+
+        // 4. Set spatial index and health info
+        foreach (var layer in layers)
+        {
+            layer.HasSpatialIndex = hasSpatialIndexLayers.Contains(layer.Name);
+            if (!layer.HasSpatialIndex)
+            {
                 if (layer.HealthLevel == LayerHealthLevel.Unhealthy)
                 {
-                    string msg = $"Layer '{layer.Name}' does not have a spatial index.";
-                    layer.HealthMessages.Add(msg);
+                    layer.HealthMessages.Add($"Layer '{layer.Name}' does not have a spatial index.");
                 }
                 else
                 {
                     layer.HealthLevel = LayerHealthLevel.Warning;
-                    string msg = $"Layer '{layer.Name}' does not have a spatial index. This may affect performance.";
-                    layer.HealthMessages.Add(msg);
+                    layer.HealthMessages.Add($"Layer '{layer.Name}' does not have a spatial index. This may affect performance.");
                 }
             }
         }
@@ -366,35 +333,31 @@ public class TileService
 
     public static List<string> GetTableColumns(string connectionString, string schema, string tableName)
     {
-        List<string> columns = new List<string>();
+        if (string.IsNullOrWhiteSpace(connectionString) ||
+            string.IsNullOrWhiteSpace(schema) ||
+            string.IsNullOrWhiteSpace(tableName))
+        {
+            return new List<string>();
+        }
 
-        string sql = @"
-        SELECT
-          COLUMN_NAME
-        FROM
-          INFORMATION_SCHEMA.COLUMNS
-        WHERE
-          TABLE_SCHEMA = @schema AND
-          TABLE_NAME = @table
+        var columns = new List<string>();
+        const string sql = @"
+          SELECT COLUMN_NAME
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @table
         ";
 
-        using (var connection = new SqlConnection(connectionString))
-        {
-            connection.Open();
-            using (var command = connection.CreateCommand())
-            {
-                command.CommandText = sql;
-                command.Parameters.AddWithValue("schema", schema);
-                command.Parameters.AddWithValue("table", tableName);
+        using var connection = new SqlConnection(connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add(new SqlParameter("@schema", SqlDbType.NVarChar, 128) { Value = schema });
+        command.Parameters.Add(new SqlParameter("@table", SqlDbType.NVarChar, 128) { Value = tableName });
 
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        columns.Add(reader.GetString(0));
-                    }
-                }
-            }
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            columns.Add(reader.GetString(0));
         }
 
         return columns;
