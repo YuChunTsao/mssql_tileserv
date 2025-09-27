@@ -19,6 +19,7 @@ public class TileService
 
     public TileService(string connectionString)
     {
+        Console.WriteLine("TileService instance created");
         _connectionString = connectionString;
     }
 
@@ -203,8 +204,9 @@ public class TileService
         return tile;
     }
 
-    public static List<LayerMeta> GetAvailableTables(string connectionString)
+    public static List<LayerMeta> GetAvailableTables(string connectionString, Config config)
     {
+        Console.WriteLine("🔍 Checking available layers...");
         var layers = new List<LayerMeta>();
         var layerDict = new Dictionary<string, LayerMeta>();
 
@@ -240,7 +242,7 @@ public class TileService
         // 1. Get geometry tables/views
         using (var command = connection.CreateCommand())
         {
-            Console.WriteLine("Checking for geometry/geography columns in the database...");
+            Console.WriteLine("🔍 Checking for geometry/geography columns in the database...");
             command.CommandText = sqlFindTableInfo;
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -266,7 +268,7 @@ public class TileService
         }
 
         // 2. Get SRID for each layer
-        Console.WriteLine("Checking SRIDs for geometry/geography columns...");
+        Console.WriteLine("🔍 Checking SRIDs for geometry/geography columns...");
         foreach (var layer in layers)
         {
             var sqlFindSrid = $@"
@@ -300,7 +302,7 @@ public class TileService
         var hasSpatialIndexLayers = new HashSet<string>();
         using (var command = connection.CreateCommand())
         {
-            Console.WriteLine("Checking for spatial indexes in the database...");
+            Console.WriteLine("🔍 Checking for spatial indexes in the database...");
             command.CommandText = sqlFindSpatialIndex;
             using var spatialIndexReader = command.ExecuteReader();
             while (spatialIndexReader.Read())
@@ -314,7 +316,7 @@ public class TileService
         foreach (var layer in layers)
         {
             layer.HasSpatialIndex = hasSpatialIndexLayers.Contains(layer.Name);
-            if (!layer.HasSpatialIndex)
+            if (!layer.HasSpatialIndex && layer.ObjectType == "U") // Views cannot have a spatial index in SQL Server.
             {
                 if (layer.HealthLevel == LayerHealthLevel.Unhealthy)
                 {
@@ -327,6 +329,14 @@ public class TileService
                 }
             }
         }
+
+        foreach (var layer in layers)
+        {
+            List<string> columns = TileService.GetTableColumns(connectionString, config.Database.Schema, layer.Name);
+            layer.Columns = columns;
+        }
+
+        Console.WriteLine("🚀 Finished checking layers.");
 
         return layers;
     }

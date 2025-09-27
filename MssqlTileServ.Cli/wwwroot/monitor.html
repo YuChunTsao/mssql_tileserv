@@ -88,8 +88,9 @@
       }
     }
 
-    function hasSpatialIndex(hasSpatialIndex) {
-      return hasSpatialIndex ? '✅ Yes' : '❌ No';
+    function hasSpatialIndex(row) {
+      if (row.objectType.trim() === 'V') return 'N/A';
+      return row.hasSpatialIndex ? '✅ Yes' : '❌ No';
     }
 
     function renderTable(data) {
@@ -107,7 +108,7 @@
           <td>${row.geometryColumnName}</td>
           <td>${row.geometryTypeName}</td>
           <td>${row.srid}</td>
-          <td>${hasSpatialIndex(row.hasSpatialIndex)}</td>
+          <td>${hasSpatialIndex(row)}</td>
           <td>${getHealth(row)}</td>
         `;
         tbody.appendChild(tr);
