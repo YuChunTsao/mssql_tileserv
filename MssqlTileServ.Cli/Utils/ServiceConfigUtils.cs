@@ -33,9 +33,4 @@ public static class ServiceConfigUtils
             });
         }
     }
-
-    public static void PrintServiceConfig(Config config)
-    {
-        // TODO: Implement printing service config for debugging
-    }
 }

@@ -11,11 +11,11 @@ public class TileCache
 
     public async Task<byte[]> GetOrAddAsync(string key, Func<Task<byte[]>> valueFactory, TimeSpan expiration)
     {
-        if (!_cache.TryGetValue(key, out byte[] value))
+        if (!_cache.TryGetValue(key, out byte[]? value) || value is null)
         {
             value = await valueFactory();
             _cache.Set(key, value, expiration);
         }
-        return value;
+        return value!;
     }
 }

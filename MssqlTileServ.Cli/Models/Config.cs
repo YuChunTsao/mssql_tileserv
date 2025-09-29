@@ -5,6 +5,28 @@ public class Config
     public DatabaseConfig Database { get; set; } = new DatabaseConfig();
     public ServiceConfig Service { get; set; } = new ServiceConfig();
     public TileConfig Tile { get; set; } = new TileConfig();
+
+    public override string ToString()
+    {
+        return $"Database:\n" +
+               $"  Server: {Database.Server}\n" +
+               $"  Port: {Database.Port}\n" +
+               $"  User: {Database.User}\n" +
+               $"  Password: {(string.IsNullOrEmpty(Database.Password) ? "(empty)" : "********")}\n" +
+               $"  Name: {Database.Name}\n" +
+               $"  Schema: {Database.Schema}\n" +
+               $"  DbTimeout: {Database.DbTimeout}\n" +
+               $"  DbPoolMaxConns: {Database.DbPoolMaxConns}\n" +
+               $"Service:\n" +
+               $"  HttpPort: {Service.HttpPort}\n" +
+               $"  HttpsPort: {Service.HttpsPort}\n" +
+               $"  CORSOrigins: [{string.Join(", ", Service.CORSOrigins)}]\n" +
+               $"  CacheTTL: {Service.CacheTTL}\n" +
+               $"  MemoryExpirationSeconds: {Service.MemoryExpirationSeconds}\n" +
+               $"Tile:\n" +
+               $"  Extent: {Tile.Extent}\n" +
+               $"  Buffer: {Tile.Buffer}\n";
+    }
 }
 
 public class DatabaseConfig

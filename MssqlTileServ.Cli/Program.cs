@@ -20,7 +20,7 @@ namespace MssqlTileServ.Cli
                 Config config = TomlConfigLoader.Load(configFilePath);
                 string connectionString = DbUtils.GetConnectionString(config);
 
-                SridWktLoader.LoadFromCsv("Resources/epsg_wkt_mapping.csv");
+                SridWktProvider.Init();
 
                 var builder = WebApplication.CreateBuilder();
 
@@ -42,6 +42,20 @@ namespace MssqlTileServ.Cli
                 app.MapMonitorEndpoint();
                 app.MapTileEndpoint(layers, connectionString, config);
                 app.MapLayerEndpoint(layers);
+
+                Task.Run(() =>
+                {
+                    while (true)
+                    {
+                        var key = Console.ReadKey(true);
+                        if (key.Key == ConsoleKey.H)
+                        {
+                            Console.WriteLine("Available commands:");
+                            Console.WriteLine("H - Show this help message");
+                        }
+                        // Add more key actions here if needed
+                    }
+                });
 
                 app.Run();
             });

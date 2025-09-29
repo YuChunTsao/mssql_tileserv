@@ -8,8 +8,8 @@ namespace MssqlTileServ.Cli.Utils
     {
         public static Geometry ProjectTo(this Geometry geometry, int srid)
         {
-            string? sourceWkt = SridWktLoader.GetWkt(geometry.SRID);
-            string? targetWkt = SridWktLoader.GetWkt(srid);
+            string? sourceWkt = SridWktProvider.GetWkt(geometry.SRID);
+            string? targetWkt = SridWktProvider.GetWkt(srid);
 
             if (sourceWkt == null)
                 throw new ArgumentException($"Source SRID {geometry.SRID} not found in WKT mapping.");
