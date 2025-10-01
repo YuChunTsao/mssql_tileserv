@@ -101,7 +101,7 @@ public class TileService
                             featureCount++;
                         }
                     }
-                    
+
                     _logger.LogDebug("Retrieved {FeatureCount} features for layer {LayerName}", featureCount, layername);
                 }
             }
@@ -165,7 +165,7 @@ public class TileService
     public async Task<VectorTile> GetVectorTile(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
         _logger.LogDebug("Generating vector tile for layer {LayerName} at z={Z}, x={X}, y={Y}", layerMeta.Name, z, x, y);
-        
+
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
         Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
 
@@ -208,7 +208,7 @@ public class TileService
     public async Task<byte[]> GetVectorTileBytes(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
         _logger.LogDebug("Generating vector tile bytes for layer {LayerName} at z={Z}, x={X}, y={Y}", layerMeta.Name, z, x, y);
-        
+
         VectorTile vt = await GetVectorTile(config, layerMeta, z, x, y);
         byte[] tile;
         using (var ms = new MemoryStream())
@@ -220,8 +220,8 @@ public class TileService
         int uncompressedSize = tile.Length;
         tile = CompressMVT(tile);
         int compressedSize = tile.Length;
-        
-        _logger.LogTrace("Compressed tile from {UncompressedSize} to {CompressedSize} bytes (ratio: {CompressionRatio:P1})", 
+
+        _logger.LogTrace("Compressed tile from {UncompressedSize} to {CompressedSize} bytes (ratio: {CompressionRatio:P1})",
             uncompressedSize, compressedSize, (double)compressedSize / uncompressedSize);
 
         return tile;
@@ -230,9 +230,25 @@ public class TileService
     public static List<LayerMeta> GetAvailableTables(string connectionString, Config config)
     {
         Log.Information("Checking available layers in database");
-        var layers = new List<LayerMeta>();
-        var layerDict = new Dictionary<string, LayerMeta>();
+        using var connection = new SqlConnection(connectionString);
+        connection.Open();
 
+        var layers = GetGeometryLayers(connection);
+        SetLayerSrids(connection, layers);
+        SetSpatialIndexInfo(connection, layers);
+        SetLayerColumns(connectionString, config, layers);
+
+        Log.Information("Layer discovery completed. Found {TotalLayers} layers: {HealthyLayers} healthy, {WarningLayers} with warnings, {UnhealthyLayers} unhealthy",
+            layers.Count,
+            layers.Count(l => l.HealthLevel == LayerHealthLevel.Healthy),
+            layers.Count(l => l.HealthLevel == LayerHealthLevel.Warning),
+            layers.Count(l => l.HealthLevel == LayerHealthLevel.Unhealthy));
+
+        return layers;
+    }
+
+    private static List<LayerMeta> GetGeometryLayers(SqlConnection connection)
+    {
         const string sqlFindTableInfo = @"
         SELECT
             o.name AS ObjectName,
@@ -249,20 +265,9 @@ public class TileService
             o.type IN ('U', 'V')
             AND ty.name IN ('geometry', 'geography');";
 
-        const string sqlFindSpatialIndex = @"
-        SELECT
-            t.name AS table_name
-        FROM
-            sys.tables t
-        JOIN
-            sys.schemas s ON t.schema_id = s.schema_id
-        JOIN
-            sys.indexes i ON i.object_id = t.object_id AND i.type_desc = 'SPATIAL';";
+        var layers = new List<LayerMeta>();
+        var layerDict = new Dictionary<string, LayerMeta>();
 
-        using var connection = new SqlConnection(connectionString);
-        connection.Open();
-
-        // 1. Get geometry tables/views
         using (var command = connection.CreateCommand())
         {
             Log.Information("Scanning database for geometry/geography columns");
@@ -286,13 +291,16 @@ public class TileService
                     };
                     layers.Add(layer);
                     layerDict[objectName] = layer;
-                    Log.Debug("Found {ObjectType} '{ObjectName}' with {GeometryType} column '{ColumnName}'", 
+                    Log.Debug("Found {ObjectType} '{ObjectName}' with {GeometryType} column '{ColumnName}'",
                         objectType == "U" ? "table" : "view", objectName, typeName, columnName);
                 }
             }
         }
+        return layers;
+    }
 
-        // 2. Get SRID for each layer
+    private static void SetLayerSrids(SqlConnection connection, List<LayerMeta> layers)
+    {
         Log.Information("Checking SRIDs for {LayerCount} geometry/geography columns", layers.Count);
         foreach (var layer in layers)
         {
@@ -324,8 +332,20 @@ public class TileService
                 count++;
             }
         }
+    }
 
-        // 3. Get spatial index info
+    private static void SetSpatialIndexInfo(SqlConnection connection, List<LayerMeta> layers)
+    {
+        const string sqlFindSpatialIndex = @"
+        SELECT
+            t.name AS table_name
+        FROM
+            sys.tables t
+        JOIN
+            sys.schemas s ON t.schema_id = s.schema_id
+        JOIN
+            sys.indexes i ON i.object_id = t.object_id AND i.type_desc = 'SPATIAL';";
+
         var hasSpatialIndexLayers = new HashSet<string>();
         using (var command = connection.CreateCommand())
         {
@@ -340,7 +360,6 @@ public class TileService
             }
         }
 
-        // 4. Set spatial index and health info
         foreach (var layer in layers)
         {
             layer.HasSpatialIndex = hasSpatialIndexLayers.Contains(layer.Name);
@@ -358,7 +377,10 @@ public class TileService
                 }
             }
         }
+    }
 
+    private static void SetLayerColumns(string connectionString, Config config, List<LayerMeta> layers)
+    {
         foreach (var layer in layers)
         {
             Log.Debug("Getting column information for layer {LayerName}", layer.Name);
@@ -366,17 +388,9 @@ public class TileService
             layer.Columns = columns;
             Log.Debug("Layer {LayerName} has {ColumnCount} columns", layer.Name, columns.Count);
         }
-
-        Log.Information("Layer discovery completed. Found {TotalLayers} layers: {HealthyLayers} healthy, {WarningLayers} with warnings, {UnhealthyLayers} unhealthy",
-            layers.Count,
-            layers.Count(l => l.HealthLevel == LayerHealthLevel.Healthy),
-            layers.Count(l => l.HealthLevel == LayerHealthLevel.Warning),
-            layers.Count(l => l.HealthLevel == LayerHealthLevel.Unhealthy));
-
-        return layers;
     }
 
-    public static List<string> GetTableColumns(string connectionString, string schema, string tableName)
+    private static List<string> GetTableColumns(string connectionString, string schema, string tableName)
     {
         if (string.IsNullOrWhiteSpace(connectionString) ||
             string.IsNullOrWhiteSpace(schema) ||
