@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.SqlTypes;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using Microsoft.SqlServer.Types;
 using MssqlTileServ.Cli.Models;
 using MssqlTileServ.Cli.Utils;
@@ -9,17 +10,20 @@ using NetTopologySuite.Geometries;
 using NetTopologySuite.IO;
 using NetTopologySuite.IO.VectorTiles;
 using NetTopologySuite.IO.VectorTiles.Mapbox;
+using Serilog;
 
 namespace MssqlTileServ.Cli.Services;
 
 public class TileService
 {
     private readonly string _connectionString;
+    private readonly ILogger<TileService> _logger;
     private const int EPSG_4326 = 4326;
 
-    public TileService(string connectionString)
+    public TileService(string connectionString, ILogger<TileService> logger)
     {
-        Console.WriteLine("TileService instance created");
+        _logger = logger;
+        _logger.LogInformation("TileService instance created");
         _connectionString = connectionString;
     }
 
@@ -28,6 +32,8 @@ public class TileService
         string layername = layerMeta.Name;
         string geometryColumnName = layerMeta.GeometryColumnName;
         int SRID = layerMeta.SRID;
+
+        _logger.LogDebug("Getting tile data for layer {LayerName} with SRID {SRID}", layername, SRID);
 
         var columnList = string.Join(", ", layerMeta.Columns.Where(c => !string.Equals(c, geometryColumnName, StringComparison.OrdinalIgnoreCase))
             .Select(c => $"[{c}]"));
@@ -41,6 +47,7 @@ public class TileService
           WHERE {geometryColumnName}.STIntersects(@boundsGeometry) = 1
         ";
 
+        _logger.LogTrace("Executing SQL query for layer {LayerName}: {SqlQuery}", layername, sqlQuery);
 
         TileData tileData = new TileData();
         using (var connection = new SqlConnection(_connectionString))
@@ -62,6 +69,7 @@ public class TileService
 
                 using (var reader = await command.ExecuteReaderAsync())
                 {
+                    int featureCount = 0;
                     while (await reader.ReadAsync())
                     {
                         Geometry? geometry = null;
@@ -90,8 +98,11 @@ public class TileService
                         {
                             tileData.Geometries.Add(geometry);
                             tileData.Attributes.Add(attributes);
+                            featureCount++;
                         }
                     }
+                    
+                    _logger.LogDebug("Retrieved {FeatureCount} features for layer {LayerName}", featureCount, layername);
                 }
             }
         }
@@ -153,6 +164,8 @@ public class TileService
 
     public async Task<VectorTile> GetVectorTile(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
+        _logger.LogDebug("Generating vector tile for layer {LayerName} at z={Z}, x={X}, y={Y}", layerMeta.Name, z, x, y);
+        
         Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
         Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
 
@@ -161,6 +174,7 @@ public class TileService
 
         if (layerMeta.SRID != EPSG_4326)
         {
+            _logger.LogTrace("Projecting bounds from EPSG:4326 to SRID {SRID} for layer {LayerName}", layerMeta.SRID, layerMeta.Name);
             // Project the bounds to the layer's SRID
             boundsGeometry = boundsGeometry.ProjectTo(layerMeta.SRID);
             bufferedBoundsGeometry = bufferedBoundsGeometry.ProjectTo(layerMeta.SRID);
@@ -175,6 +189,7 @@ public class TileService
         // If the projection of the layer is not WGS84, we need to transform the geometries in the tileData
         if (layerMeta.SRID != EPSG_4326)
         {
+            _logger.LogTrace("Transforming geometries from SRID {SRID} to EPSG:4326 for layer {LayerName}", layerMeta.SRID, layerMeta.Name);
             for (int i = 0; i < tileData.Geometries.Count; i++)
             {
                 tileData.Geometries[i].SRID = layerMeta.SRID;
@@ -185,12 +200,15 @@ public class TileService
         Layer layer = CreateVectorTileLayer(layername, tileData);
         vectorTile.Layers.Add(layer);
 
+        _logger.LogDebug("Successfully generated vector tile for layer {LayerName} with {FeatureCount} features", layerMeta.Name, tileData.Geometries.Count);
         return vectorTile;
     }
 
     // TODO: Support multiple layers in a single tile
     public async Task<byte[]> GetVectorTileBytes(Config config, LayerMeta layerMeta, int z, int x, int y)
     {
+        _logger.LogDebug("Generating vector tile bytes for layer {LayerName} at z={Z}, x={X}, y={Y}", layerMeta.Name, z, x, y);
+        
         VectorTile vt = await GetVectorTile(config, layerMeta, z, x, y);
         byte[] tile;
         using (var ms = new MemoryStream())
@@ -199,14 +217,19 @@ public class TileService
             tile = ms.ToArray();
         }
 
+        int uncompressedSize = tile.Length;
         tile = CompressMVT(tile);
+        int compressedSize = tile.Length;
+        
+        _logger.LogTrace("Compressed tile from {UncompressedSize} to {CompressedSize} bytes (ratio: {CompressionRatio:P1})", 
+            uncompressedSize, compressedSize, (double)compressedSize / uncompressedSize);
 
         return tile;
     }
 
     public static List<LayerMeta> GetAvailableTables(string connectionString, Config config)
     {
-        Console.WriteLine("🔍 Checking available layers...");
+        Log.Information("Checking available layers in database");
         var layers = new List<LayerMeta>();
         var layerDict = new Dictionary<string, LayerMeta>();
 
@@ -242,7 +265,7 @@ public class TileService
         // 1. Get geometry tables/views
         using (var command = connection.CreateCommand())
         {
-            Console.WriteLine("🔍 Checking for geometry/geography columns in the database...");
+            Log.Information("Scanning database for geometry/geography columns");
             command.CommandText = sqlFindTableInfo;
             using var reader = command.ExecuteReader();
             while (reader.Read())
@@ -263,12 +286,14 @@ public class TileService
                     };
                     layers.Add(layer);
                     layerDict[objectName] = layer;
+                    Log.Debug("Found {ObjectType} '{ObjectName}' with {GeometryType} column '{ColumnName}'", 
+                        objectType == "U" ? "table" : "view", objectName, typeName, columnName);
                 }
             }
         }
 
         // 2. Get SRID for each layer
-        Console.WriteLine("🔍 Checking SRIDs for geometry/geography columns...");
+        Log.Information("Checking SRIDs for {LayerCount} geometry/geography columns", layers.Count);
         foreach (var layer in layers)
         {
             var sqlFindSrid = $@"
@@ -291,9 +316,11 @@ public class TileService
                 {
                     layer.HealthLevel = LayerHealthLevel.Unhealthy;
                     layer.HealthMessages.Add($"Layer '{layer.Name}' has multiple SRIDs. It will not be used to serve tiles.");
+                    Log.Warning("Layer {LayerName} has multiple SRIDs and will be marked as unhealthy", layer.Name);
                     break;
                 }
                 layer.SRID = sridReader.GetInt32(sridReader.GetOrdinal("SRID"));
+                Log.Debug("Layer {LayerName} uses SRID {SRID}", layer.Name, layer.SRID);
                 count++;
             }
         }
@@ -302,13 +329,14 @@ public class TileService
         var hasSpatialIndexLayers = new HashSet<string>();
         using (var command = connection.CreateCommand())
         {
-            Console.WriteLine("🔍 Checking for spatial indexes in the database...");
+            Log.Information("Checking for spatial indexes in database");
             command.CommandText = sqlFindSpatialIndex;
             using var spatialIndexReader = command.ExecuteReader();
             while (spatialIndexReader.Read())
             {
                 var tableName = spatialIndexReader.GetString(spatialIndexReader.GetOrdinal("table_name"));
                 hasSpatialIndexLayers.Add(tableName);
+                Log.Debug("Found spatial index on table {TableName}", tableName);
             }
         }
 
@@ -326,17 +354,24 @@ public class TileService
                 {
                     layer.HealthLevel = LayerHealthLevel.Warning;
                     layer.HealthMessages.Add($"Layer '{layer.Name}' does not have a spatial index. This may affect performance.");
+                    Log.Warning("Table {LayerName} does not have a spatial index, which may affect performance", layer.Name);
                 }
             }
         }
 
         foreach (var layer in layers)
         {
+            Log.Debug("Getting column information for layer {LayerName}", layer.Name);
             List<string> columns = TileService.GetTableColumns(connectionString, config.Database.Schema, layer.Name);
             layer.Columns = columns;
+            Log.Debug("Layer {LayerName} has {ColumnCount} columns", layer.Name, columns.Count);
         }
 
-        Console.WriteLine("🚀 Finished checking layers.");
+        Log.Information("Layer discovery completed. Found {TotalLayers} layers: {HealthyLayers} healthy, {WarningLayers} with warnings, {UnhealthyLayers} unhealthy",
+            layers.Count,
+            layers.Count(l => l.HealthLevel == LayerHealthLevel.Healthy),
+            layers.Count(l => l.HealthLevel == LayerHealthLevel.Warning),
+            layers.Count(l => l.HealthLevel == LayerHealthLevel.Unhealthy));
 
         return layers;
     }

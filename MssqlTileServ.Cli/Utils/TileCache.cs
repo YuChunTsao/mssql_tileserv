@@ -9,13 +9,16 @@ public class TileCache
         _cache = new MemoryCache(new MemoryCacheOptions());
     }
 
-    public async Task<byte[]> GetOrAddAsync(string key, Func<Task<byte[]>> valueFactory, TimeSpan expiration)
+    public async Task<(byte[] data, bool fromCache)> GetOrAddWithCacheInfoAsync(string key, Func<Task<byte[]>> valueFactory, TimeSpan expiration)
     {
-        if (!_cache.TryGetValue(key, out byte[]? value) || value is null)
+        if (_cache.TryGetValue(key, out byte[]? value) && value is not null)
         {
-            value = await valueFactory();
-            _cache.Set(key, value, expiration);
+            return (value, true); // Cache hit
         }
-        return value!;
+
+        // Cache miss - generate new value
+        value = await valueFactory();
+        _cache.Set(key, value, expiration);
+        return (value, false); // Not from cache
     }
 }

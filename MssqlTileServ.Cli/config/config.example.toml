@@ -24,3 +24,11 @@ Extent = 4096
 
 # Padding to add to vector tiles
 Buffer = 256
+
+# Logging configuration
+[Logging]
+LogLevel = "Information"    # Logging levels: Trace, Debug, Information, Warning, Error, Critical
+LogToFile = true            # Whether to log to file
+LogToConsole = true         # Whether to log to console
+LogFilePath = "logs/mssql-tileserv-.log"  # Path for log files (supports date rolling)
+MaxLogFiles = 10            # Maximum number of log files to keep

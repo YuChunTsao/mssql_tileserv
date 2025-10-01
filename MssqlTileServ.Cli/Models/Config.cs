@@ -5,6 +5,7 @@ public class Config
     public DatabaseConfig Database { get; set; } = new DatabaseConfig();
     public ServiceConfig Service { get; set; } = new ServiceConfig();
     public TileConfig Tile { get; set; } = new TileConfig();
+    public LoggingConfig Logging { get; set; } = new LoggingConfig();
 
     public override string ToString()
     {
@@ -25,7 +26,13 @@ public class Config
                $"  MemoryExpirationSeconds: {Service.MemoryExpirationSeconds}\n" +
                $"Tile:\n" +
                $"  Extent: {Tile.Extent}\n" +
-               $"  Buffer: {Tile.Buffer}\n";
+               $"  Buffer: {Tile.Buffer}\n" +
+               $"Logging:\n" +
+               $"  LogLevel: {Logging.LogLevel}\n" +
+               $"  LogToFile: {Logging.LogToFile}\n" +
+               $"  LogToConsole: {Logging.LogToConsole}\n" +
+               $"  LogFilePath: {Logging.LogFilePath}\n" +
+               $"  MaxLogFiles: {Logging.MaxLogFiles}\n";
     }
 }
 
@@ -54,4 +61,13 @@ public class TileConfig
 {
     public int Extent { get; set; } = 4096;
     public int Buffer { get; set; } = 256;
+}
+
+public class LoggingConfig
+{
+    public string LogLevel { get; set; } = "Information";
+    public bool LogToFile { get; set; } = true;
+    public bool LogToConsole { get; set; } = true;
+    public string LogFilePath { get; set; } = "logs/mssql-tileserv-.log";
+    public int MaxLogFiles { get; set; } = 10;
 }
