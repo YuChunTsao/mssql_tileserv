@@ -162,54 +162,57 @@ public class TileService
         }
     }
 
-    public async Task<VectorTile> GetVectorTile(Config config, LayerMeta layerMeta, int z, int x, int y)
+    public async Task<VectorTile> GetVectorTile(Config config, List<LayerMeta> layerMetas, int z, int x, int y)
     {
-        _logger.LogDebug("Generating vector tile for layer {LayerName} at z={Z}, x={X}, y={Y}", layerMeta.Name, z, x, y);
-
-        Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
-        Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
-
-        Geometry boundsGeometry = new GeometryFactory(new PrecisionModel(), EPSG_4326).ToGeometry(bounds);
-        Geometry bufferedBoundsGeometry = new GeometryFactory(new PrecisionModel(), EPSG_4326).ToGeometry(bufferedBounds);
-
-        if (layerMeta.SRID != EPSG_4326)
-        {
-            _logger.LogTrace("Projecting bounds from EPSG:4326 to SRID {SRID} for layer {LayerName}", layerMeta.SRID, layerMeta.Name);
-            // Project the bounds to the layer's SRID
-            boundsGeometry = boundsGeometry.ProjectTo(layerMeta.SRID);
-            bufferedBoundsGeometry = bufferedBoundsGeometry.ProjectTo(layerMeta.SRID);
-        }
-
         var tileDefinition = new NetTopologySuite.IO.VectorTiles.Tiles.Tile(x, y, z);
         VectorTile vectorTile = new VectorTile { TileId = tileDefinition.Id };
 
-        string layername = layerMeta.Name;
-        TileData tileData = await GetTileData(config, boundsGeometry, bufferedBoundsGeometry, layerMeta);
-
-        // If the projection of the layer is not WGS84, we need to transform the geometries in the tileData
-        if (layerMeta.SRID != EPSG_4326)
+        foreach (var layerMeta in layerMetas)
         {
-            _logger.LogTrace("Transforming geometries from SRID {SRID} to EPSG:4326 for layer {LayerName}", layerMeta.SRID, layerMeta.Name);
-            for (int i = 0; i < tileData.Geometries.Count; i++)
+            _logger.LogDebug("Generating vector tile for layer {LayerName} at z={Z}, x={X}, y={Y}", layerMeta.Name, z, x, y);
+
+            Envelope bounds = TileHelper.TileIdToBounds(x, y, z);
+            Envelope bufferedBounds = TileHelper.TileIdToBounds(x, y, z, config.Tile.Extent, config.Tile.Buffer);
+
+            Geometry boundsGeometry = new GeometryFactory(new PrecisionModel(), EPSG_4326).ToGeometry(bounds);
+            Geometry bufferedBoundsGeometry = new GeometryFactory(new PrecisionModel(), EPSG_4326).ToGeometry(bufferedBounds);
+
+            if (layerMeta.SRID != EPSG_4326)
             {
-                tileData.Geometries[i].SRID = layerMeta.SRID;
-                tileData.Geometries[i] = tileData.Geometries[i].ProjectTo(EPSG_4326);
+                _logger.LogTrace("Projecting bounds from EPSG:4326 to SRID {SRID} for layer {LayerName}", layerMeta.SRID, layerMeta.Name);
+                // Project the bounds to the layer's SRID
+                boundsGeometry = boundsGeometry.ProjectTo(layerMeta.SRID);
+                bufferedBoundsGeometry = bufferedBoundsGeometry.ProjectTo(layerMeta.SRID);
             }
+
+            string layername = layerMeta.Name;
+            TileData tileData = await GetTileData(config, boundsGeometry, bufferedBoundsGeometry, layerMeta);
+
+            // If the projection of the layer is not WGS84, we need to transform the geometries in the tileData
+            if (layerMeta.SRID != EPSG_4326)
+            {
+                _logger.LogTrace("Transforming geometries from SRID {SRID} to EPSG:4326 for layer {LayerName}", layerMeta.SRID, layerMeta.Name);
+                for (int i = 0; i < tileData.Geometries.Count; i++)
+                {
+                    tileData.Geometries[i].SRID = layerMeta.SRID;
+                    tileData.Geometries[i] = tileData.Geometries[i].ProjectTo(EPSG_4326);
+                }
+            }
+
+            Layer layer = CreateVectorTileLayer(layername, tileData);
+            vectorTile.Layers.Add(layer);
+
+            _logger.LogDebug("Successfully generated vector tile for layer {LayerName} with {FeatureCount} features", layerMeta.Name, tileData.Geometries.Count);
         }
-
-        Layer layer = CreateVectorTileLayer(layername, tileData);
-        vectorTile.Layers.Add(layer);
-
-        _logger.LogDebug("Successfully generated vector tile for layer {LayerName} with {FeatureCount} features", layerMeta.Name, tileData.Geometries.Count);
         return vectorTile;
     }
 
-    // TODO: Support multiple layers in a single tile
-    public async Task<byte[]> GetVectorTileBytes(Config config, LayerMeta layerMeta, int z, int x, int y)
+    public async Task<byte[]> GetVectorTileBytes(Config config, List<LayerMeta> layerMetas, int z, int x, int y)
     {
-        _logger.LogDebug("Generating vector tile bytes for layer {LayerName} at z={Z}, x={X}, y={Y}", layerMeta.Name, z, x, y);
+        _logger.LogDebug("Generating vector tile bytes for layers {LayerNames} at z={Z}, x={X}, y={Y}",
+            string.Join(", ", layerMetas.Select(l => l.Name)), z, x, y);
 
-        VectorTile vt = await GetVectorTile(config, layerMeta, z, x, y);
+        VectorTile vt = await GetVectorTile(config, layerMetas, z, x, y);
         byte[] tile;
         using (var ms = new MemoryStream())
         {

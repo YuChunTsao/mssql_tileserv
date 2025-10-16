@@ -9,22 +9,35 @@ namespace MssqlTileServ.Cli.Endpoints
 {
     public static class TileEndpoint
     {
-        public static void MapTileEndpoint(this WebApplication app, List<LayerMeta> layers, string connectionString, Config config)
+        public static void MapTileEndpoint(this WebApplication app, List<LayerMeta> layerMetas, string connectionString, Config config)
         {
             var tileCache = new TileCache();
-            app.MapGet("{layer}/{z:int}/{x:int}/{y:int}", async (HttpContext context, string layer, int z, int x, int y, TileService tileService, ILogger<Program> logger) =>
+            app.MapGet("{layers}/{z:int}/{x:int}/{y:int}", async (HttpContext context, string layers, int z, int x, int y, TileService tileService, ILogger<Program> logger) =>
             {
                 var stopwatch = Stopwatch.StartNew();
-                logger.LogInformation("Tile request: {Layer} {Z}/{X}/{Y} from {RemoteIP}", layer, z, x, y, context.Connection.RemoteIpAddress);
+                logger.LogInformation("Tile request: {Layers} {Z}/{X}/{Y} from {RemoteIP}", layers, z, x, y, context.Connection.RemoteIpAddress);
 
-                string cacheKey = $"{layer}-{z}/{x}/{y}";
+                string cacheKey = $"{layers}-{z}/{x}/{y}";
+                var requestLayers = layers.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-                LayerMeta? layerMeta = layers.FirstOrDefault(l => l.Name.Equals(layer));
-                if (layerMeta == null)
+                List<LayerMeta> selectedLayers = layerMetas
+                    .Where(l => requestLayers.Contains(l.Name, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+
+                var missingLayers = requestLayers
+                    .Where(rl => !layerMetas.Any(l => l.Name.Equals(rl, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
+
+                if (missingLayers.Count > 0)
                 {
-                    logger.LogWarning("Layer '{Layer}' not found for tile request {Z}/{X}/{Y}", layer, z, x, y);
+                    logger.LogWarning("Requested layers not found: {MissingLayers}", string.Join(", ", missingLayers));
+                }
+
+                if (selectedLayers.Count == 0)
+                {
+                    logger.LogWarning("No valid layers found in request '{Layers}' for tile {Z}/{X}/{Y}", layers, z, x, y);
                     context.Response.StatusCode = 404;
-                    return Results.NotFound($"Layer '{layer}' not found.");
+                    return Results.NotFound($"No valid layers found in request '{layers}'.");
                 }
 
                 try
@@ -38,17 +51,17 @@ namespace MssqlTileServ.Cli.Endpoints
                         (tile, fromCache) = await tileCache.GetOrAddWithCacheInfoAsync(cacheKey, async () =>
                         {
                             logger.LogDebug("Cache miss for tile {CacheKey}, generating new tile", cacheKey);
-                            return await tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
+                            return await tileService.GetVectorTileBytes(config, selectedLayers, z, x, y);
                         }, TimeSpan.FromSeconds(config.Service.MemoryExpirationSeconds));
                     }
                     else
                     {
-                        tile = await tileService.GetVectorTileBytes(config, layerMeta, z, x, y);
+                        tile = await tileService.GetVectorTileBytes(config, selectedLayers, z, x, y);
                     }
 
                     stopwatch.Stop();
-                    logger.LogInformation("Tile served: {Layer} {Z}/{X}/{Y} in {Duration}ms (size: {Size} bytes, cached: {FromCache})",
-                        layer, z, x, y, stopwatch.ElapsedMilliseconds, tile.Length, fromCache);
+                    logger.LogInformation("Tile served: {Layers} {Z}/{X}/{Y} in {Duration}ms (size: {Size} bytes, cached: {FromCache})",
+                        layers, z, x, y, stopwatch.ElapsedMilliseconds, tile.Length, fromCache);
 
                     if (config.Service.CacheTTL > 0)
                     {
@@ -61,8 +74,8 @@ namespace MssqlTileServ.Cli.Endpoints
                 catch (Exception ex)
                 {
                     stopwatch.Stop();
-                    logger.LogError(ex, "Error generating tile for {Layer} {Z}/{X}/{Y} after {Duration}ms",
-                        layer, z, x, y, stopwatch.ElapsedMilliseconds);
+                    logger.LogError(ex, "Error generating tile for {Layers} {Z}/{X}/{Y} after {Duration}ms",
+                        layers, z, x, y, stopwatch.ElapsedMilliseconds);
                     context.Response.StatusCode = 500;
                     return Results.Problem("An error occurred while generating the tile");
                 }
